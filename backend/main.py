@@ -451,7 +451,8 @@ class NodeInput(BaseModel):
     node_type: str
     input_keys: List[str] = []
     output_keys: List[str] = []
-    model_config: Optional[ModelConfigInput] = None
+    # Renamed field from model_config to llm_config due to Pydantic V2 conflict
+    llm_config: Optional[ModelConfigInput] = None
 
 class EdgeInput(BaseModel):
     # Input model for adding an edge via API
@@ -461,7 +462,8 @@ class EdgeInput(BaseModel):
 class GenerateTextNodeRequest(BaseModel):
     # Input model for the NEW single-node text generation endpoint
     prompt_text: str # The final, already formatted prompt text
-    model_config: Optional[ModelConfigInput] = None # Optional config override
+    # Renamed from model_config to avoid Pydantic v2 conflict
+    llm_config: Optional[ModelConfigInput] = None # Optional config override
 
 class GenerateTextNodeResponse(BaseModel):
     # Output model for the NEW single-node text generation endpoint
@@ -491,22 +493,23 @@ def read_root():
 @app.post("/add_node", status_code=201)
 async def add_node_api(node: NodeInput):
     """Adds a node to the *global* script chain via API."""
-    # Convert API input model config to internal LLMConfig if provided
     llm_config_for_node = default_llm_config
-    if node.model_config:
+    # Use the renamed field 'llm_config' here
+    if node.llm_config:
         llm_config_for_node = LLMConfig(
-            model=node.model_config.model,
-            temperature=node.model_config.temperature,
-            max_tokens=node.model_config.max_tokens
+            # And here
+            model=node.llm_config.model,
+            temperature=node.llm_config.temperature,
+            max_tokens=node.llm_config.max_tokens
         )
-
     try:
         global_script_chain.add_node(
+            # ... (arguments remain the same, model_config arg is correct here) ...
             node_id=node.node_id,
             node_type=node.node_type,
             input_keys=node.input_keys,
             output_keys=node.output_keys,
-            model_config=llm_config_for_node
+            model_config=llm_config_for_node # This maps to the Node class __init__ param
         )
         print(f"Added node: {node.node_id}")
         return {"message": f"Node '{node.node_id}' added successfully."}
@@ -538,11 +541,13 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
 
     # Determine config: use request's config or fallback to global default
     node_config = default_llm_config
-    if request.model_config:
+    # Use the renamed field 'llm_config' here
+    if request.llm_config:
         node_config = LLMConfig(
-            model=request.model_config.model,
-            temperature=request.model_config.temperature,
-            max_tokens=request.model_config.max_tokens
+            # And here
+            model=request.llm_config.model,
+            temperature=request.llm_config.temperature,
+            max_tokens=request.llm_config.max_tokens
         )
 
     print(f"--- Executing Single Text Generation (Model: {node_config.model}) ---")

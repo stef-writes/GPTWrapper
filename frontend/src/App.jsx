@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import ReactFlow, {
   Controls, // Adds zoom/pan controls
   Background, // Adds a background pattern
@@ -6,7 +6,10 @@ import ReactFlow, {
   applyEdgeChanges, // Helper for edge state updates
   addEdge, // Helper for adding edges
   ReactFlowProvider, // Import the provider
+  Panel,
+  useReactFlow,
 } from 'reactflow';
+import { v4 as uuidv4 } from 'uuid';
 
 // Import React Flow CSS
 import 'reactflow/dist/style.css';
@@ -14,58 +17,332 @@ import 'reactflow/dist/style.css';
 // Import our App specific CSS
 import './App.css';
 
-// Initial node (example)
-const initialNodes = [
-  {
-    id: '1', // Needs to be unique string
-    position: { x: 100, y: 100 },
-    data: { label: 'Node 1 (Placeholder)' }, // Data associated with the node
-    // type: 'customNode' // We'll define custom nodes later
-  },
-];
+// Import custom node types
+import nodeTypes from './components/CustomNodeTypes';
 
-// Initial edges (example)
-const initialEdges = [];
+// Import NodeService for API calls
+import NodeService from './services/NodeService';
 
-function App() {
-  // State for nodes and edges
-  const [nodes, setNodes] = useState(initialNodes);
-  const [edges, setEdges] = useState(initialEdges);
+function Flow() {
+  const reactFlowWrapper = useRef(null);
+  const [nodes, setNodes] = useState([]);
+  const [edges, setEdges] = useState([]);
+  const [reactFlowInstance, setReactFlowInstance] = useState(null);
+  const [nodeOutputs, setNodeOutputs] = useState({});
+  const [isConnecting, setIsConnecting] = useState(false);
 
-  // Handlers for node/edge changes (drag, select, remove)
+  // Handler for node changes (drag, select, remove)
   const onNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    [setNodes]
+    []
   );
+
+  // Handler for edge changes (select, remove)
   const onEdgesChange = useCallback(
     (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
-    [setEdges]
+    []
   );
 
   // Handler for connecting nodes
   const onConnect = useCallback(
-    (connection) => setEdges((eds) => addEdge(connection, eds)),
-    [setEdges]
+    async (connection) => {
+      try {
+        setIsConnecting(true);
+        
+        // Create the edge in the UI
+        setEdges((eds) => addEdge(connection, eds));
+        
+        // Get required node information
+        const sourceNodeId = connection.source;
+        const targetNodeId = connection.target;
+        
+        // Add the edge to the backend
+        await NodeService.addEdge(sourceNodeId, targetNodeId);
+        
+        // Update available variables for the target node
+        setNodes((nds) => 
+          nds.map((node) => {
+            if (node.id === targetNodeId) {
+              // Find the source node to get its name
+              const sourceNode = nds.find(n => n.id === sourceNodeId);
+              const sourceNodeName = sourceNode?.data?.nodeName || 'Unnamed Node';
+              
+              // Add source node as a variable
+              const updatedVariables = [
+                ...(node.data.variables || []),
+                {
+                  id: sourceNodeId,
+                  name: sourceNodeName
+                }
+              ];
+              
+              // Remove duplicates
+              const uniqueVariables = updatedVariables.filter(
+                (variable, index, self) => 
+                  index === self.findIndex(v => v.id === variable.id)
+              );
+              
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  variables: uniqueVariables
+                }
+              };
+            }
+            return node;
+          })
+        );
+      } catch (error) {
+        console.error('Failed to connect nodes:', error);
+        // Optionally revert the UI change on error
+        setEdges((eds) => eds.filter(e => 
+          !(e.source === connection.source && e.target === connection.target)
+        ));
+      } finally {
+        setIsConnecting(false);
+      }
+    },
+    []
   );
 
+  // Add a new node when the button is clicked
+  const onAddNode = useCallback(async () => {
+    if (!reactFlowInstance) return;
+    
+    try {
+      // Get the center position of the viewport
+      const { x, y, zoom } = reactFlowInstance.getViewport();
+      const centerX = (window.innerWidth / 2 - x) / zoom;
+      const centerY = (window.innerHeight / 2 - y) / zoom;
+      
+      const id = uuidv4();
+      const nodeName = `Node ${nodes.length + 1}`;
+      
+      // Add the node to the backend first
+      await NodeService.addNode(
+        id,
+        'text_generation', // Default node type
+        ['context', 'query'], // Default input keys
+        ['generated_text'], // Default output keys
+      );
+      
+      // Then add to the UI if successful
+      const newNode = {
+        id,
+        type: 'llmNode',
+        position: { x: centerX, y: centerY },
+        data: {
+          nodeName,
+          prompt: '',
+          output: '',
+          variables: [],
+          onNameChange: (name) => {
+            // Update node name
+            setNodes((nds) =>
+              nds.map((node) => {
+                if (node.id === id) {
+                  return {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      nodeName: name,
+                    },
+                  };
+                }
+                return node;
+              })
+            );
+            
+            // Update node name in other nodes' variables
+            setNodes((nds) =>
+              nds.map((node) => {
+                if (node.id !== id && node.data.variables) {
+                  const updatedVariables = node.data.variables.map(variable => {
+                    if (variable.id === id) {
+                      return {
+                        ...variable,
+                        name: name
+                      };
+                    }
+                    return variable;
+                  });
+                  
+                  return {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      variables: updatedVariables
+                    }
+                  };
+                }
+                return node;
+              })
+            );
+          },
+          onPromptChange: (prompt) => {
+            setNodes((nds) =>
+              nds.map((node) => {
+                if (node.id === id) {
+                  return {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      prompt,
+                    },
+                  };
+                }
+                return node;
+              })
+            );
+          },
+          onOutputChange: (output) => {
+            setNodeOutputs(prev => ({
+              ...prev,
+              [id]: output
+            }));
+          },
+          onVariableSelect: (variableId) => {
+            // Just store the selected variable ID for later use
+            setNodes((nds) =>
+              nds.map((node) => {
+                if (node.id === id) {
+                  return {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      selectedVariableId: variableId,
+                    },
+                  };
+                }
+                return node;
+              })
+            );
+          },
+          onRun: async (prompt, selectedVariableId) => {
+            // Process the prompt with any variables
+            let processedPrompt = prompt;
+            
+            if (selectedVariableId) {
+              const variableOutput = nodeOutputs[selectedVariableId] || '';
+              // Check if the variable is wrapped in curly braces in the prompt
+              const variableName = nodes.find(n => n.id === id)?.data?.variables?.find(
+                v => v.id === selectedVariableId
+              )?.name || '';
+              
+              // Replace {VariableName} with the variable's output
+              if (variableName) {
+                const variablePattern = new RegExp(`\\{${variableName}\\}`, 'g');
+                processedPrompt = processedPrompt.replace(variablePattern, variableOutput);
+              }
+            }
+            
+            try {
+              // Call the backend API to generate text
+              const response = await NodeService.generateText(processedPrompt);
+              return response.generated_text;
+            } catch (error) {
+              console.error('Error generating text:', error);
+              return `Error: ${error.message}`;
+            }
+          },
+        },
+      };
+      
+      setNodes((nds) => [...nds, newNode]);
+    } catch (error) {
+      console.error('Failed to add node:', error);
+    }
+  }, [reactFlowInstance, nodes, nodeOutputs]);
+
+  const onDragOver = useCallback((event) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  // Execute the entire flow
+  const executeFlow = useCallback(async () => {
+    try {
+      const result = await NodeService.executeChain();
+      console.log('Flow execution results:', result);
+      
+      // Update node outputs based on results
+      if (result.results) {
+        const newNodeOutputs = { ...nodeOutputs };
+        
+        Object.entries(result.results).forEach(([nodeId, nodeResult]) => {
+          // Only update if the node exists in our flow
+          if (nodes.some(node => node.id === nodeId)) {
+            // Update the output in the state
+            newNodeOutputs[nodeId] = nodeResult.generated_text || 
+                                     nodeResult.decision_output || 
+                                     nodeResult.reasoning_result || 
+                                     nodeResult.retrieved_data || 
+                                     JSON.stringify(nodeResult);
+            
+            // Update node display
+            setNodes(prevNodes => 
+              prevNodes.map(node => {
+                if (node.id === nodeId) {
+                  return {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      output: newNodeOutputs[nodeId]
+                    }
+                  };
+                }
+                return node;
+              })
+            );
+          }
+        });
+        
+        setNodeOutputs(newNodeOutputs);
+      }
+    } catch (error) {
+      console.error('Error executing flow:', error);
+    }
+  }, [nodes, nodeOutputs]);
+
   return (
-    // Wrap the main div with ReactFlowProvider
+    <div className="reactflow-wrapper" ref={reactFlowWrapper}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onInit={setReactFlowInstance}
+        onDragOver={onDragOver}
+        nodeTypes={nodeTypes}
+        fitView
+      >
+        <Background />
+        <Controls />
+        <Panel position="top-right">
+          <button className="add-node-button" onClick={onAddNode}>
+            Add Node
+          </button>
+          {nodes.length > 1 && (
+            <button 
+              className="execute-flow-button" 
+              onClick={executeFlow}
+              style={{ marginLeft: '10px' }}
+            >
+              Execute Flow
+            </button>
+          )}
+        </Panel>
+      </ReactFlow>
+    </div>
+  );
+}
+
+function App() {
+  return (
     <ReactFlowProvider>
-      <div className="reactflow-wrapper">
-        <ReactFlow
-          nodes={nodes}               // Pass nodes state
-          edges={edges}               // Pass edges state
-          onNodesChange={onNodesChange} // Handler for node changes
-          onEdgesChange={onEdgesChange} // Handler for edge changes
-          onConnect={onConnect}       // Handler for creating edges
-          fitView                     // Zooms/pans to fit nodes on initial render
-          // nodeTypes={nodeTypes} // We will add custom node types here later
-        >
-          <Background /> {/* Adds dot pattern background */}
-          <Controls />   {/* Adds zoom/pan controls */}
-          {/* <MiniMap /> Optional minimap */}
-        </ReactFlow>
-      </div>
+      <Flow />
     </ReactFlowProvider>
   );
 }

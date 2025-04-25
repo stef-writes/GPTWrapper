@@ -1,15 +1,14 @@
 /* Reset/Base Styles */
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f4f4f4;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
 }
 
-/* Ensure the root element takes up height if needed, although body usually suffices */
+/* Ensure the root element takes up height if needed */
 #root {
   height: 100vh;
   width: 100vw;
@@ -17,16 +16,109 @@ body {
 
 /* Style for the main React Flow container */
 .reactflow-wrapper {
-  /* Let's use absolute positioning to fill the #root container */
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  /* background-color: #eee; */ /* Optional: uncomment to visualize the wrapper */
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--color-background);
+  position: relative;
 }
 
-/* Base styles for React Flow can be imported later */
+/* Grid background */
+.react-flow__background-pattern {
+  background-size: 24px 24px;
+  background-image: 
+    linear-gradient(to right, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
+}
+
+/* Add node button */
+.add-node-button {
+  background-color: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.add-node-button:hover {
+  background-color: var(--color-primary-hover);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+/* Execute flow button */
+.execute-flow-button {
+  background-color: var(--color-success);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.execute-flow-button:hover {
+  background-color: var(--color-success-hover);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+/* Override react-flow's default node selection style */
+.react-flow__node.selected {
+  box-shadow: 0 0 0 2px var(--color-primary);
+}
+
+/* Override react-flow's default edge style */
+.react-flow__edge-path {
+  stroke: var(--color-foreground);
+  stroke-width: 1.5;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-primary);
+  stroke-width: 2.5;
+}
+
+/* Override react-flow's connection line */
+.react-flow__connection-path {
+  stroke: var(--color-primary);
+  stroke-width: 1.5;
+  stroke-dasharray: 5, 5;
+}
+
+/* Controls panel */
+.react-flow__controls {
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.react-flow__controls-button {
+  background-color: var(--color-surface);
+  border: none;
+  color: var(--color-foreground);
+  width: 20px;
+  height: 20px;
+  padding: 5px;
+  margin: 5px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.react-flow__controls-button:hover {
+  background-color: var(--color-surface-hover);
+  color: var(--color-primary);
+}
 
 h1 {
   text-align: center;
