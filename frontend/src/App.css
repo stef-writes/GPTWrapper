@@ -1,8 +1,36 @@
+/* Reset/Base Styles */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f4f4f4;
+}
+
+/* Ensure the root element takes up height if needed, although body usually suffices */
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Style for the main React Flow container */
+.reactflow-wrapper {
+  /* Let's use absolute positioning to fill the #root container */
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  /* background-color: #eee; */ /* Optional: uncomment to visualize the wrapper */
+}
+
+/* Base styles for React Flow can be imported later */
+
+h1 {
   text-align: center;
+  color: #333;
 }
 
 /* Basic App Styling */
