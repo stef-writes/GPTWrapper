@@ -422,6 +422,20 @@ class Message(BaseModel):
 #     message: str
 #     history: Optional[List[Message]] = []
 
+# --- OpenAI Client Setup --- (Re-adding this section)
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    print("Error: OPENAI_API_KEY not found. Did you create a .env file?")
+    client = None # Mark client as unusable
+else:
+    # Try to set up the OpenAI client object
+    try:
+        client = OpenAI(api_key=api_key)
+        print("--- OpenAI Client Initialized Successfully ---")
+    except Exception as e:
+        print(f"Error setting up OpenAI client: {e}")
+        client = None # Mark client as unusable
+
 # --- API Interface for UI Integration --- 
 
 # Pydantic models for the *new* graph API
