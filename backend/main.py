@@ -6,6 +6,8 @@ from openai import OpenAI
 from dotenv import load_dotenv 
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+import time                     # Added for timing
+from contextlib import contextmanager # Added for context manager
 
 load_dotenv()
 
@@ -25,6 +27,54 @@ app.add_middleware(
     allow_methods=["GET", "POST"], 
     allow_headers=["*"],          
 )
+
+# --- Token Usage Tracking --- (Copied from user input)
+@contextmanager
+def track_token_usage():
+    """Context manager to track OpenAI API token usage."""
+    class TokenUsage:
+        def __init__(self):
+            self.prompt_tokens = 0
+            self.completion_tokens = 0
+            self.total_tokens = 0
+            self.start_time = time.time()
+            self.end_time = None
+            self.cost = 0 # Note: Based on approximate rates
+
+        def update(self, response_dict):
+            """Update token counts from OpenAI API response dictionary."""
+            # Expects response_dict to be the dictionary form of the API response
+            usage = response_dict.get("usage", {})
+            self.prompt_tokens += usage.get("prompt_tokens", 0)
+            self.completion_tokens += usage.get("completion_tokens", 0)
+            self.total_tokens += usage.get("total_tokens", 0)
+
+            # Approximate cost calculation (rates depend heavily on the actual model)
+            prompt_cost = (self.prompt_tokens / 1000) * 0.0015  # Sample rate
+            completion_cost = (self.completion_tokens / 1000) * 0.002 # Sample rate
+            self.cost = prompt_cost + completion_cost
+
+        def finish(self):
+            self.end_time = time.time()
+
+        def __str__(self):
+            duration = round(self.end_time - self.start_time, 2) if self.end_time else 0
+            return (
+                f"--- Token Usage ---\n"
+                f"  Prompt Tokens:     {self.prompt_tokens}\n"
+                f"  Completion Tokens: {self.completion_tokens}\n"
+                f"  Total Tokens:      {self.total_tokens}\n"
+                f"  Est. Cost (USD):   ${self.cost:.6f}\n" # Emphasize this is an estimate
+                f"  API Call Duration: {duration}s\n"
+                f"-------------------"
+            )
+
+    token_usage = TokenUsage()
+    try:
+        yield token_usage # Provides the tracker object to the 'with' block
+    finally:
+        token_usage.finish()
+        print(token_usage) # Print stats when exiting the context
 
 # --- Prompt Templating System ---
 @dataclass
@@ -108,19 +158,38 @@ async def chat_endpoint(request: ChatRequest):
         # Add the formatted message dictionary to the end of the list
         messages_payload.append(formatted_user_message)
 
-        # Call OpenAI API
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=messages_payload,
-            max_tokens=150
-        )
+        # --- Call OpenAI API with Token Tracking ---
+        print("--- Calling OpenAI API ---") # Indicate API call start
+        ai_response_content = None
+        with track_token_usage() as tracker:
+            # Make the API call inside the context manager
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=messages_payload,
+                max_tokens=150
+            )
+            # Update tracker with usage info from the response
+            # Need to convert the Pydantic response model to a dictionary first
+            response_dict = response.model_dump()
+            tracker.update(response_dict)
+            # Extract the actual text content
+            ai_response_content = response.choices[0].message.content
 
-        ai_response = response.choices[0].message.content
-        return {"response": ai_response}
+        # Check if we got content before returning
+        if ai_response_content is None:
+             raise HTTPException(status_code=500, detail="Failed to get valid response content from OpenAI.")
+
+        # Return only the text content to the frontend
+        return {"response": ai_response_content}
 
     except Exception as e:
-        print(f"Error calling OpenAI: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get response from OpenAI: {str(e)}")
+        # Enhanced error logging
+        print(f"Error during OpenAI call or processing: {e}")
+        # Check if the exception is already an HTTPException, otherwise create one
+        if isinstance(e, HTTPException):
+            raise e
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to get response from OpenAI: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn 
