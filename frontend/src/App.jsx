@@ -18,19 +18,28 @@ function App() {
     if (!inputValue.trim() || isLoading) return // Don't send empty messages or while loading
 
     const userMessage = { role: 'user', content: inputValue }
+
+    // Create the history to send *before* adding the new user message to the local state
+    const historyToSend = [...chatHistory]
+
+    // Update local state immediately for responsiveness
     setChatHistory((prevHistory) => [...prevHistory, userMessage])
     setInputValue('') // Clear input field
     setIsLoading(true)
     setError(null)
 
     try {
-      // --- Send message to backend ---
+      // --- Send message and history to backend ---
       const response = await fetch('http://localhost:8000/api/chat', { // Ensure this matches your backend URL/port
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: userMessage.content }), // Send only the message content
+        // Send the current message and the history
+        body: JSON.stringify({ 
+          message: userMessage.content, 
+          history: historyToSend // Send the history *before* the latest user message was added
+        }), 
       })
 
       if (!response.ok) {
