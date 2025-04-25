@@ -203,7 +203,7 @@ function Flow() {
             }));
           },
           onVariableSelect: (variableId) => {
-            // Just store the selected variable ID for later use
+            // Store the selected variable ID for later use
             setNodes((nds) =>
               nds.map((node) => {
                 if (node.id === id) {
@@ -222,24 +222,36 @@ function Flow() {
           onRun: async (prompt, selectedVariableId) => {
             // Process the prompt with any variables
             let processedPrompt = prompt;
+            let inputData = {};
             
             if (selectedVariableId) {
               const variableOutput = nodeOutputs[selectedVariableId] || '';
-              // Check if the variable is wrapped in curly braces in the prompt
-              const variableName = nodes.find(n => n.id === id)?.data?.variables?.find(
-                v => v.id === selectedVariableId
-              )?.name || '';
+              const sourceNode = nodes.find(n => n.id === selectedVariableId);
+              const variableName = sourceNode?.data?.nodeName || '';
               
-              // Replace {VariableName} with the variable's output
+              // For the UI: replace {VariableName} with the variable's output
               if (variableName) {
                 const variablePattern = new RegExp(`\\{${variableName}\\}`, 'g');
                 processedPrompt = processedPrompt.replace(variablePattern, variableOutput);
+                
+                // For proper ScriptChain integration: add to context
+                inputData = {
+                  context: variableOutput,
+                  query: prompt
+                };
               }
             }
             
             try {
-              // Call the backend API to generate text
+              // When using individual run, use the single node API (not the chain)
               const response = await NodeService.generateText(processedPrompt);
+              
+              // Store this output for potential use by downstream nodes
+              setNodeOutputs(prev => ({
+                ...prev,
+                [id]: response.generated_text
+              }));
+              
               return response.generated_text;
             } catch (error) {
               console.error('Error generating text:', error);
@@ -263,7 +275,26 @@ function Flow() {
   // Execute the entire flow
   const executeFlow = useCallback(async () => {
     try {
-      const result = await NodeService.executeChain();
+      // Prepare initial data for the chain execution
+      const initialInputs = {};
+      
+      // For each node, find if it has any connected input nodes
+      // and prepare the context accordingly
+      edges.forEach(edge => {
+        const sourceNode = nodes.find(n => n.id === edge.source);
+        const targetNode = nodes.find(n => n.id === edge.target);
+        
+        if (sourceNode && targetNode) {
+          const sourceOutput = nodeOutputs[sourceNode.id] || '';
+          
+          // Add this as input for the ScriptChain execution
+          // Using the proper input keys that the ScriptChain expects
+          initialInputs[`context_${targetNode.id}`] = sourceOutput;
+        }
+      });
+      
+      // Execute the entire flow with these inputs
+      const result = await NodeService.executeChain(initialInputs);
       console.log('Flow execution results:', result);
       
       // Update node outputs based on results
@@ -274,11 +305,13 @@ function Flow() {
           // Only update if the node exists in our flow
           if (nodes.some(node => node.id === nodeId)) {
             // Update the output in the state
-            newNodeOutputs[nodeId] = nodeResult.generated_text || 
-                                     nodeResult.decision_output || 
-                                     nodeResult.reasoning_result || 
-                                     nodeResult.retrieved_data || 
-                                     JSON.stringify(nodeResult);
+            const outputText = nodeResult.generated_text || 
+                              nodeResult.decision_output || 
+                              nodeResult.reasoning_result || 
+                              nodeResult.retrieved_data || 
+                              JSON.stringify(nodeResult);
+            
+            newNodeOutputs[nodeId] = outputText;
             
             // Update node display
             setNodes(prevNodes => 
@@ -288,7 +321,7 @@ function Flow() {
                     ...node,
                     data: {
                       ...node.data,
-                      output: newNodeOutputs[nodeId]
+                      output: outputText
                     }
                   };
                 }
@@ -303,7 +336,7 @@ function Flow() {
     } catch (error) {
       console.error('Error executing flow:', error);
     }
-  }, [nodes, nodeOutputs]);
+  }, [nodes, edges, nodeOutputs]);
 
   return (
     <div className="reactflow-wrapper" ref={reactFlowWrapper}>

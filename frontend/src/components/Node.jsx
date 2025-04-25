@@ -9,6 +9,7 @@ const Node = ({ data, isConnectable }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [variables, setVariables] = useState(data.variables || []);
   const [selectedVariable, setSelectedVariable] = useState(null);
+  const [showTooltip, setShowTooltip] = useState(false);
   
   const promptRef = useRef(null);
   const outputRef = useRef(null);
@@ -60,7 +61,23 @@ const Node = ({ data, isConnectable }) => {
   
   // Handle variable selection
   const handleVariableSelect = (variableId) => {
-    setSelectedVariable(variableId);
+    if (variableId) {
+      setSelectedVariable(variableId);
+      // Insert variable template into prompt if not already present
+      const selectedVar = variables.find(v => v.id === variableId);
+      if (selectedVar && !prompt.includes(`{${selectedVar.name}}`)) {
+        const newPrompt = prompt ? 
+          `${prompt}\n\nInclude the following: {${selectedVar.name}}` : 
+          `Include the following: {${selectedVar.name}}`;
+        setPrompt(newPrompt);
+        if (data.onPromptChange) {
+          data.onPromptChange(newPrompt);
+        }
+      }
+    } else {
+      setSelectedVariable(null);
+    }
+    
     if (data.onVariableSelect) {
       data.onVariableSelect(variableId);
     }
@@ -92,7 +109,7 @@ const Node = ({ data, isConnectable }) => {
         type="source"
         position={Position.Top}
         id="top"
-        style={{ background: '#000', width: '12px', height: '12px' }}
+        style={{ background: 'var(--color-primary)', width: '10px', height: '10px' }}
         isConnectable={isConnectable}
       />
       
@@ -116,17 +133,43 @@ const Node = ({ data, isConnectable }) => {
       
       {/* Variable dropdown */}
       <div className="variable-dropdown">
+        <div className="variable-dropdown-header">
+          <label htmlFor="variable-select">Input from connected nodes:</label>
+          <button 
+            className="help-button" 
+            onClick={() => setShowTooltip(!showTooltip)}
+            type="button"
+          >
+            ?
+          </button>
+        </div>
+        
+        {showTooltip && (
+          <div className="tooltip">
+            Select a connected node to use its output. 
+            The pattern <code>{"{NodeName}"}</code> in your prompt will be 
+            replaced with that node's output when you run this node.
+          </div>
+        )}
+        
         <select 
+          id="variable-select"
           value={selectedVariable || ''}
           onChange={(e) => handleVariableSelect(e.target.value)}
         >
-          <option value="">Variable Dropdown</option>
+          <option value="">-- Select an input source --</option>
           {variables.map((variable) => (
             <option key={variable.id} value={variable.id}>
               {variable.name}
             </option>
           ))}
         </select>
+        
+        {selectedVariable && variables.length > 0 && (
+          <div className="variable-usage-hint">
+            Use <code>{`{${variables.find(v => v.id === selectedVariable)?.name || ''}}`}</code> in your prompt
+          </div>
+        )}
       </div>
       
       {/* Prompt textarea */}
@@ -135,7 +178,7 @@ const Node = ({ data, isConnectable }) => {
         className="prompt-textarea"
         value={prompt}
         onChange={handlePromptChange}
-        placeholder="Type Prompt Here..."
+        placeholder="Type your prompt here. Include {NodeName} to reference a connected node's output."
       />
       
       {/* Output textarea */}
@@ -152,7 +195,7 @@ const Node = ({ data, isConnectable }) => {
         type="target"
         position={Position.Bottom}
         id="bottom"
-        style={{ background: '#000', width: '12px', height: '12px' }}
+        style={{ background: 'var(--color-primary)', width: '10px', height: '10px' }}
         isConnectable={isConnectable}
       />
     </div>

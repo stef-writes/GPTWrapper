@@ -6,19 +6,27 @@ const API_URL = 'http://localhost:8000';
  * Sends a prompt to the backend API to generate text
  * @param {string} prompt - The prompt text
  * @param {object} config - Optional LLM config parameters
+ * @param {object} contextData - Optional context data for the prompt
  * @returns {Promise<object>} - The API response with generated text
  */
-export const generateText = async (prompt, config = null) => {
+export const generateText = async (prompt, config = null, contextData = null) => {
   try {
+    const payload = {
+      prompt_text: prompt,
+      llm_config: config,
+    };
+
+    // If contextData is provided, add it to the payload
+    if (contextData) {
+      payload.context_data = contextData;
+    }
+
     const response = await fetch(`${API_URL}/generate_text_node`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        prompt_text: prompt,
-        llm_config: config,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -108,6 +116,8 @@ export const addEdge = async (fromNode, toNode) => {
  */
 export const executeChain = async (initialInputs = null) => {
   try {
+    console.log('Executing chain with initial inputs:', initialInputs);
+    
     const response = await fetch(`${API_URL}/execute`, {
       method: 'POST',
       headers: {
