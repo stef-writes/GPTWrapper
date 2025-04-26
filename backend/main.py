@@ -464,6 +464,8 @@ class GenerateTextNodeRequest(BaseModel):
     prompt_text: str # The final, already formatted prompt text
     # Renamed from model_config to avoid Pydantic v2 conflict
     llm_config: Optional[ModelConfigInput] = None # Optional config override
+    # Add context_data to hold selected node outputs
+    context_data: Optional[Dict[str, str]] = None # Map of node names to their outputs
 
 class GenerateTextNodeResponse(BaseModel):
     # Output model for the NEW single-node text generation endpoint
@@ -529,6 +531,7 @@ async def add_edge_api(edge: EdgeInput):
     if not nx.is_directed_acyclic_graph(global_script_chain.graph):
         global_script_chain.graph.remove_edge(edge.from_node, edge.to_node)
         raise HTTPException(status_code=400, detail="Adding this edge would create a cycle. Please check your node connections.")
+    
     print(f"Added edge: {edge.from_node} -> {edge.to_node}")
     return {"message": f"Edge from '{edge.from_node}' to '{edge.to_node}' added successfully."}
 
@@ -552,11 +555,25 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
 
     print(f"--- Executing Single Text Generation (Model: {node_config.model}) ---")
 
+    # Process prompt templates using context_data if available
+    processed_prompt = request.prompt_text
+    if request.context_data:
+        try:
+            print(f"Processing template with context data: {list(request.context_data.keys())}")
+            # Replace each {NodeName} with the corresponding output from context_data
+            for node_name, node_output in request.context_data.items():
+                template_marker = "{" + node_name + "}"
+                processed_prompt = processed_prompt.replace(template_marker, str(node_output))
+            print(f"Template variables processed successfully")
+        except Exception as e:
+            print(f"Error processing template variables: {e}")
+            # Continue with original prompt if template processing fails
+            pass
+
     # Prepare simple messages list (system prompt + user prompt text)
-    # Note: No history or complex templating needed here as per request
     messages_payload = [
         {"role": "system", "content": "You are a helpful AI assistant."},
-        {"role": "user", "content": request.prompt_text} # Use the direct prompt text
+        {"role": "user", "content": processed_prompt} # Use the processed prompt text
     ]
 
     response_content = None

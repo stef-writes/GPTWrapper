@@ -6,11 +6,14 @@ const API_URL = 'http://localhost:8000';
  * Sends a prompt to the backend API to generate text
  * @param {string} prompt - The prompt text
  * @param {object} config - Optional LLM config parameters
- * @param {object} contextData - Optional context data for the prompt
+ * @param {object} contextData - Optional context data for the prompt (node outputs)
  * @returns {Promise<object>} - The API response with generated text
  */
 export const generateText = async (prompt, config = null, contextData = null) => {
   try {
+    console.log('Sending to backend - Prompt:', prompt);
+    console.log('Sending to backend - Context Data:', contextData);
+    
     const payload = {
       prompt_text: prompt,
       llm_config: config,
