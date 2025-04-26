@@ -25,7 +25,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,       
     allow_credentials=True,     
-    allow_methods=["GET", "POST"], 
+    allow_methods=["GET", "POST", "OPTIONS"], 
     allow_headers=["*"],          
 )
 
@@ -523,14 +523,14 @@ async def add_edge_api(edge: EdgeInput):
     # Basic validation: Check if nodes exist before adding edge
     if edge.from_node not in global_script_chain.graph or edge.to_node not in global_script_chain.graph:
         raise HTTPException(status_code=404, detail=f"Node(s) not found: '{edge.from_node}' or '{edge.to_node}'")
-    try:
-        global_script_chain.add_edge(edge.from_node, edge.to_node)
-        print(f"Added edge: {edge.from_node} -> {edge.to_node}")
-        return {"message": f"Edge from '{edge.from_node}' to '{edge.to_node}' added successfully."}
-    except Exception as e:
-        # Catch potential errors from networkx if edge creates cycle immediately (though less likely here)
-        print(f"Error adding edge {edge.from_node} -> {edge.to_node}: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to add edge: {str(e)}")
+    # --- CYCLE PREVENTION ---
+    # Temporarily add the edge and check for cycles
+    global_script_chain.graph.add_edge(edge.from_node, edge.to_node)
+    if not nx.is_directed_acyclic_graph(global_script_chain.graph):
+        global_script_chain.graph.remove_edge(edge.from_node, edge.to_node)
+        raise HTTPException(status_code=400, detail="Adding this edge would create a cycle. Please check your node connections.")
+    print(f"Added edge: {edge.from_node} -> {edge.to_node}")
+    return {"message": f"Edge from '{edge.from_node}' to '{edge.to_node}' added successfully."}
 
 # --- Single Node Execution Endpoint --- (NEW)
 @app.post("/generate_text_node", response_model=GenerateTextNodeResponse)

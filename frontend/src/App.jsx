@@ -23,6 +23,8 @@ import nodeTypes from './components/CustomNodeTypes';
 // Import NodeService for API calls
 import NodeService from './services/NodeService';
 
+import Node from './components/Node';
+
 function Flow() {
   const reactFlowWrapper = useRef(null);
   const [nodes, setNodes] = useState([]);
@@ -48,26 +50,18 @@ function Flow() {
     async (connection) => {
       try {
         setIsConnecting(true);
-        
         // Create the edge in the UI
         setEdges((eds) => addEdge(connection, eds));
-        
-        // Get required node information
         const sourceNodeId = connection.source;
         const targetNodeId = connection.target;
-        
         // Add the edge to the backend
         await NodeService.addEdge(sourceNodeId, targetNodeId);
-        
-        // Update available variables for the target node
+        // Update available variables for the target node (multi-input support)
         setNodes((nds) => 
           nds.map((node) => {
             if (node.id === targetNodeId) {
-              // Find the source node to get its name
               const sourceNode = nds.find(n => n.id === sourceNodeId);
               const sourceNodeName = sourceNode?.data?.nodeName || 'Unnamed Node';
-              
-              // Add source node as a variable
               const updatedVariables = [
                 ...(node.data.variables || []),
                 {
@@ -75,13 +69,11 @@ function Flow() {
                   name: sourceNodeName
                 }
               ];
-              
               // Remove duplicates
               const uniqueVariables = updatedVariables.filter(
                 (variable, index, self) => 
                   index === self.findIndex(v => v.id === variable.id)
               );
-              
               return {
                 ...node,
                 data: {
@@ -94,8 +86,9 @@ function Flow() {
           })
         );
       } catch (error) {
-        console.error('Failed to connect nodes:', error);
-        // Optionally revert the UI change on error
+        // Show backend error (cycle prevention, etc.)
+        alert(error.message || 'Failed to connect nodes.');
+        // Revert the UI change on error
         setEdges((eds) => eds.filter(e => 
           !(e.source === connection.source && e.target === connection.target)
         ));
@@ -202,8 +195,8 @@ function Flow() {
               [id]: output
             }));
           },
-          onVariableSelect: (variableId) => {
-            // Store the selected variable ID for later use
+          onVariableSelect: (variableIds) => {
+            // Store the selected variable IDs for later use (multi-input)
             setNodes((nds) =>
               nds.map((node) => {
                 if (node.id === id) {
@@ -211,7 +204,7 @@ function Flow() {
                     ...node,
                     data: {
                       ...node.data,
-                      selectedVariableId: variableId,
+                      selectedVariableIds: variableIds,
                     },
                   };
                 }
@@ -219,39 +212,30 @@ function Flow() {
               })
             );
           },
-          onRun: async (prompt, selectedVariableId) => {
-            // Process the prompt with any variables
+          onRun: async (prompt, selectedVariableIds) => {
+            // Process the prompt with any variables (multi-input)
             let processedPrompt = prompt;
             let inputData = {};
-            
-            if (selectedVariableId) {
-              const variableOutput = nodeOutputs[selectedVariableId] || '';
-              const sourceNode = nodes.find(n => n.id === selectedVariableId);
-              const variableName = sourceNode?.data?.nodeName || '';
-              
-              // For the UI: replace {VariableName} with the variable's output
-              if (variableName) {
-                const variablePattern = new RegExp(`\\{${variableName}\\}`, 'g');
-                processedPrompt = processedPrompt.replace(variablePattern, variableOutput);
-                
-                // For proper ScriptChain integration: add to context
-                inputData = {
-                  context: variableOutput,
-                  query: prompt
-                };
-              }
+            if (selectedVariableIds && selectedVariableIds.length > 0) {
+              selectedVariableIds.forEach(varId => {
+                const variableOutput = nodeOutputs[varId] || '';
+                const sourceNode = nodes.find(n => n.id === varId);
+                const variableName = sourceNode?.data?.nodeName || '';
+                if (variableName) {
+                  const variablePattern = new RegExp(`\\{${variableName}\\}`, 'g');
+                  processedPrompt = processedPrompt.replace(variablePattern, variableOutput);
+                  // For proper ScriptChain integration: add to context
+                  inputData[variableName] = variableOutput;
+                }
+              });
+              inputData['query'] = prompt;
             }
-            
             try {
-              // When using individual run, use the single node API (not the chain)
               const response = await NodeService.generateText(processedPrompt);
-              
-              // Store this output for potential use by downstream nodes
               setNodeOutputs(prev => ({
                 ...prev,
                 [id]: response.generated_text
               }));
-              
               return response.generated_text;
             } catch (error) {
               console.error('Error generating text:', error);
@@ -338,10 +322,51 @@ function Flow() {
     }
   }, [nodes, edges, nodeOutputs]);
 
+  // Helper to find DIRECTLY connected input nodes
+  const findDirectInputNodes = (nodeId, nodes, edges) => {
+    const inputEdges = edges.filter(edge => edge.target === nodeId);
+    const inputNodeIds = inputEdges.map(edge => edge.source);
+    return nodes
+      .filter(node => inputNodeIds.includes(node.id))
+      .map(node => ({ id: node.id, name: node.data.nodeName || 'Unnamed Node' }));
+  };
+
+  // Helper: Find all downstream nodes from a given node (DFS) - Keep for potential future use or validation
+  const findDownstreamNodes = (nodeId, edges) => {
+    const visited = new Set();
+    const stack = [nodeId];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      edges.forEach(edge => {
+        if (edge.source === current && !visited.has(edge.target)) {
+          visited.add(edge.target);
+          stack.push(edge.target);
+        }
+      });
+    }
+    return visited;
+  };
+
   return (
     <div className="reactflow-wrapper" ref={reactFlowWrapper}>
       <ReactFlow
-        nodes={nodes}
+        nodes={nodes.map(node => {
+          // *** CHANGE HERE: Use findDirectInputNodes ***
+          const directInputNodes = findDirectInputNodes(node.id, nodes, edges);
+          // Compute valid input nodes for this node (all nodes not self, not downstream) - No longer used for dropdown, kept for reference
+          // const downstream = findDownstreamNodes(node.id, edges);
+          // const potentialUpstreamNodes = nodes
+          //   .filter(n => n.id !== node.id && !downstream.has(n.id))
+          //   .map(n => ({ id: n.id, name: n.data.nodeName || 'Unnamed Node' }));
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              validInputNodes: directInputNodes, // Pass only DIRECT inputs
+            },
+            type: node.type,
+          };
+        })}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}

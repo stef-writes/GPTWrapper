@@ -3,6 +3,7 @@ import { Handle, Position } from 'reactflow';
 import './Node.css';
 
 const Node = ({ data, isConnectable }) => {
+  const validInputNodes = data.validInputNodes || [];
   const [nodeName, setNodeName] = useState(data.nodeName || 'Node Name');
   const [prompt, setPrompt] = useState(data.prompt || '');
   const [output, setOutput] = useState(data.output || '');
@@ -59,27 +60,63 @@ const Node = ({ data, isConnectable }) => {
     }
   };
   
-  // Handle variable selection
-  const handleVariableSelect = (variableId) => {
-    if (variableId) {
-      setSelectedVariable(variableId);
-      // Insert variable template into prompt if not already present
-      const selectedVar = variables.find(v => v.id === variableId);
-      if (selectedVar && !prompt.includes(`{${selectedVar.name}}`)) {
-        const newPrompt = prompt ? 
-          `${prompt}\n\nInclude the following: {${selectedVar.name}}` : 
-          `Include the following: {${selectedVar.name}}`;
-        setPrompt(newPrompt);
-        if (data.onPromptChange) {
-          data.onPromptChange(newPrompt);
+  // Handle variable selection (now supports multiple and inserts at cursor)
+  const handleVariableSelect = (event) => {
+    const newlySelectedIds = Array.from(event.target.selectedOptions, option => option.value);
+    const previouslySelectedIds = selectedVariable || [];
+    setSelectedVariable(newlySelectedIds);
+
+    const addedIds = newlySelectedIds.filter(id => !previouslySelectedIds.includes(id));
+
+    if (addedIds.length > 0 && promptRef.current) {
+        const validInputNodes = data.validInputNodes || [];
+        const nodesToAdd = validInputNodes.filter(v => addedIds.includes(v.id));
+        const textarea = promptRef.current;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const currentText = textarea.value; // Use direct value for insertion calculation
+
+        let textToInsert = '';
+        nodesToAdd.forEach(selectedVar => {
+            const template = `{${selectedVar.name}}`;
+            // Only prepare template if not already present (simple check, might need refinement)
+            if (!currentText.includes(template)) {
+                // Add a space before if inserting mid-text and no space exists
+                const prefix = (start > 0 && currentText[start - 1] !== ' ') ? ' ' : '';
+                // Add a space after if not at the end and no space exists
+                const suffix = (end < currentText.length && currentText[end] !== ' ') ? ' ' : '';
+                textToInsert += `${prefix}${template}${suffix}`;
+            }
+        });
+
+        if (textToInsert) {
+            // Construct the new prompt value by inserting/replacing at cursor
+            const newPromptValue = 
+                currentText.substring(0, start) + 
+                textToInsert + 
+                currentText.substring(end);
+
+            // Update the state
+            setPrompt(newPromptValue);
+
+            // Set cursor position *after* the state update might render
+            // Use a small timeout to ensure the DOM has updated (common React pattern)
+            setTimeout(() => {
+                const newCursorPos = start + textToInsert.length;
+                textarea.focus(); // Ensure textarea has focus before setting selection
+                textarea.setSelectionRange(newCursorPos, newCursorPos);
+            }, 0);
+
+            // Notify parent
+            if (data.onPromptChange) {
+                data.onPromptChange(newPromptValue);
+            }
         }
-      }
-    } else {
-      setSelectedVariable(null);
     }
-    
+
+    // Always notify parent about the overall selection change
     if (data.onVariableSelect) {
-      data.onVariableSelect(variableId);
+      data.onVariableSelect(newlySelectedIds);
     }
   };
   
@@ -104,9 +141,9 @@ const Node = ({ data, isConnectable }) => {
   
   return (
     <div className="node">
-      {/* Source handle (top) */}
+      {/* Target handle (Input) - Moved to Top */}
       <Handle
-        type="source"
+        type="target"
         position={Position.Top}
         id="top"
         style={{ background: 'var(--color-primary)', width: '10px', height: '10px' }}
@@ -146,28 +183,32 @@ const Node = ({ data, isConnectable }) => {
         
         {showTooltip && (
           <div className="tooltip">
-            Select a connected node to use its output. 
-            The pattern <code>{"{NodeName}"}</code> in your prompt will be 
-            replaced with that node's output when you run this node.
+            Select a connected node from the dropdown below.
+            Its template, like <code>{"{NodeName}"}</code>, will be automatically
+            inserted into your prompt at the current cursor position.
           </div>
         )}
         
         <select 
           id="variable-select"
-          value={selectedVariable || ''}
-          onChange={(e) => handleVariableSelect(e.target.value)}
+          multiple
+          value={selectedVariable || []}
+          onChange={handleVariableSelect}
+          style={{ minHeight: '40px' }}
         >
-          <option value="">-- Select an input source --</option>
-          {variables.map((variable) => (
+          {validInputNodes.map((variable) => (
             <option key={variable.id} value={variable.id}>
               {variable.name}
             </option>
           ))}
         </select>
         
-        {selectedVariable && variables.length > 0 && (
+        {selectedVariable && selectedVariable.length > 0 && validInputNodes.length > 0 && (
           <div className="variable-usage-hint">
-            Use <code>{`{${variables.find(v => v.id === selectedVariable)?.name || ''}}`}</code> in your prompt
+            Use {selectedVariable.map(varId => {
+              const v = validInputNodes.find(v => v.id === varId);
+              return v ? <code key={varId}>{`{${v.name}}`}</code> : null;
+            })} in your prompt
           </div>
         )}
       </div>
@@ -178,7 +219,7 @@ const Node = ({ data, isConnectable }) => {
         className="prompt-textarea"
         value={prompt}
         onChange={handlePromptChange}
-        placeholder="Type your prompt here. Include {NodeName} to reference a connected node's output."
+        placeholder="Type your prompt here. Select connected nodes from the dropdown to include their output."
       />
       
       {/* Output textarea */}
@@ -190,9 +231,9 @@ const Node = ({ data, isConnectable }) => {
         placeholder="AI Generated Output Here..."
       />
       
-      {/* Target handle (bottom) */}
+      {/* Source handle (Output) - Moved to Bottom */}
       <Handle
-        type="target"
+        type="source"
         position={Position.Bottom}
         id="bottom"
         style={{ background: 'var(--color-primary)', width: '10px', height: '10px' }}
