@@ -196,7 +196,7 @@ function Flow() {
             }));
           },
           onVariableSelect: (variableIds) => {
-            // Store the selected variable IDs for later use (multi-input)
+            // Store the selected variable IDs for state management
             setNodes((nds) =>
               nds.map((node) => {
                 if (node.id === id) {
@@ -204,7 +204,7 @@ function Flow() {
                     ...node,
                     data: {
                       ...node.data,
-                      selectedVariableIds: variableIds,
+                      selectedVariableIds: variableIds, // Store which are selected
                     },
                   };
                 }
@@ -212,30 +212,34 @@ function Flow() {
               })
             );
           },
-          onRun: async (prompt, selectedVariableIds) => {
-            // Process the prompt with any variables (multi-input)
-            let processedPrompt = prompt;
-            let inputData = {};
-            if (selectedVariableIds && selectedVariableIds.length > 0) {
-              selectedVariableIds.forEach(varId => {
-                const variableOutput = nodeOutputs[varId] || '';
-                const sourceNode = nodes.find(n => n.id === varId);
-                const variableName = sourceNode?.data?.nodeName || '';
-                if (variableName) {
-                  const variablePattern = new RegExp(`\\{${variableName}\\}`, 'g');
-                  processedPrompt = processedPrompt.replace(variablePattern, variableOutput);
-                  // For proper ScriptChain integration: add to context
-                  inputData[variableName] = variableOutput;
-                }
+          onRun: async (prompt, activeInputNodeIds) => {
+            console.log(`Running node ${id} with active inputs:`, activeInputNodeIds);
+            
+            // Prepare context data based ONLY on actively selected nodes (checked in UI)
+            let contextData = {};
+            if (activeInputNodeIds && activeInputNodeIds.length > 0) {
+              activeInputNodeIds.forEach(inputId => {
+                const inputNodeOutput = nodeOutputs[inputId] || '';
+                const sourceNode = nodes.find(n => n.id === inputId);
+                const inputName = sourceNode?.data?.nodeName || inputId;
+                
+                // Build the context data with the output from selected nodes
+                contextData[inputName] = inputNodeOutput;
               });
-              inputData['query'] = prompt;
             }
+            
+            console.log("Context data being sent to backend:", contextData);
+            
             try {
-              const response = await NodeService.generateText(processedPrompt);
+              // Send the prompt text (with {NodeName} templates) and context data separately
+              // The backend can use contextData to replace templates or as additional context
+              const response = await NodeService.generateText(prompt, null, contextData);
+              
               setNodeOutputs(prev => ({
                 ...prev,
                 [id]: response.generated_text
               }));
+              
               return response.generated_text;
             } catch (error) {
               console.error('Error generating text:', error);
