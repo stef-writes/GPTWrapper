@@ -544,10 +544,8 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
 
     # Determine config: use request's config or fallback to global default
     node_config = default_llm_config
-    # Use the renamed field 'llm_config' here
     if request.llm_config:
         node_config = LLMConfig(
-            # And here
             model=request.llm_config.model,
             temperature=request.llm_config.temperature,
             max_tokens=request.llm_config.max_tokens
@@ -555,25 +553,46 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
 
     print(f"--- Executing Single Text Generation (Model: {node_config.model}) ---")
 
-    # Process prompt templates using context_data if available
+    # Enhanced template processing with better context
     processed_prompt = request.prompt_text
+    context_descriptions = []
+
     if request.context_data:
         try:
             print(f"Processing template with context data: {list(request.context_data.keys())}")
-            # Replace each {NodeName} with the corresponding output from context_data
+            
+            # Process each node's content with proper formatting
             for node_name, node_output in request.context_data.items():
+                # Preserve formatting and add clear delimiters around node content
+                formatted_output = f"\n\n### Content from {node_name} ###\n{node_output}\n###\n\n"
                 template_marker = "{" + node_name + "}"
-                processed_prompt = processed_prompt.replace(template_marker, str(node_output))
+                processed_prompt = processed_prompt.replace(template_marker, formatted_output)
+                
+                # Build context descriptions for system message
+                short_preview = str(node_output).replace("\n", " ")[:50]
+                context_descriptions.append(f"- {node_name} contains: {short_preview}...")
+            
             print(f"Template variables processed successfully")
         except Exception as e:
             print(f"Error processing template variables: {e}")
             # Continue with original prompt if template processing fails
             pass
 
-    # Prepare simple messages list (system prompt + user prompt text)
+    # Enhanced system message with guidance about node relationships
+    system_content = "You are a helpful AI assistant working with connected nodes of information."
+    
+    if context_descriptions:
+        system_content += "\n\nYou have access to content from these nodes:\n" + "\n".join(context_descriptions)
+        system_content += "\n\nWhen answering:"
+        system_content += "\n- Reference the specific content from nodes directly"
+        system_content += "\n- If content contains numbered items, extract and use the exact items being referenced"
+        system_content += "\n- Analyze any lists, data, or information thoroughly"
+        system_content += "\n- If a question asks about a specific numbered item (e.g., #4), provide the exact corresponding item"
+
+    # Prepare messages with enhanced system content
     messages_payload = [
-        {"role": "system", "content": "You are a helpful AI assistant."},
-        {"role": "user", "content": processed_prompt} # Use the processed prompt text
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": processed_prompt}
     ]
 
     response_content = None
