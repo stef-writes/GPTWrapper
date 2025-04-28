@@ -16,6 +16,8 @@ load_dotenv()
 
 app = FastAPI()
 
+# origins = ["*"] # Temporarily allow all origins for debugging
+
 origins = [
     "http://localhost",        
     "http://localhost:5173",  
