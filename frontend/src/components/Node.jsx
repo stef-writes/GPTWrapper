@@ -10,9 +10,16 @@ const Node = ({ data, isConnectable }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [selectedInputNodes, setSelectedInputNodes] = useState([]);
   const [showTooltip, setShowTooltip] = useState(false);
+  // New state variables for UI enhancements
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
+  const [isOutputExpanded, setIsOutputExpanded] = useState(false);
+  const [promptHeight, setPromptHeight] = useState(120); // Default height
+  const [outputHeight, setOutputHeight] = useState(120); // Default height
   
   const promptRef = useRef(null);
   const outputRef = useRef(null);
+  const promptResizeRef = useRef(null);
+  const outputResizeRef = useRef(null);
   
   // Handle node name change
   const handleNameChange = (e) => {
@@ -74,12 +81,12 @@ const Node = ({ data, isConnectable }) => {
     const newPrompt = textBefore + template + textAfter;
     
     // Update prompt state
-    setPrompt(newPrompt);
+        setPrompt(newPrompt);
     
     // Notify parent of the change
-    if (data.onPromptChange) {
-      data.onPromptChange(newPrompt);
-    }
+        if (data.onPromptChange) {
+          data.onPromptChange(newPrompt);
+        }
     
     // Set focus back to textarea and position cursor after inserted template
     setTimeout(() => {
@@ -98,12 +105,64 @@ const Node = ({ data, isConnectable }) => {
         : [...prev, nodeId];
       
       // Notify parent of the change
-      if (data.onVariableSelect) {
+    if (data.onVariableSelect) {
         data.onVariableSelect(newSelection);
-      }
+    }
       
       return newSelection;
     });
+  };
+  
+  // Handle prompt expansion toggle
+  const togglePromptExpand = () => {
+    setIsPromptExpanded(!isPromptExpanded);
+  };
+  
+  // Handle output expansion toggle
+  const toggleOutputExpand = () => {
+    setIsOutputExpanded(!isOutputExpanded);
+  };
+  
+  // Handle manual resizing of prompt area
+  const handlePromptResize = (e) => {
+    const startY = e.clientY;
+    const startHeight = promptHeight;
+    
+    const onMouseMove = (moveEvent) => {
+      const newHeight = startHeight + moveEvent.clientY - startY;
+      if (newHeight >= 80) { // Minimum height
+        setPromptHeight(newHeight);
+      }
+    };
+    
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+  
+  // Handle manual resizing of output area
+  const handleOutputResize = (e) => {
+    const startY = e.clientY;
+    const startHeight = outputHeight;
+    
+    const onMouseMove = (moveEvent) => {
+      const newHeight = startHeight + moveEvent.clientY - startY;
+      if (newHeight >= 80) { // Minimum height
+        setOutputHeight(newHeight);
+      }
+    };
+    
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
   };
   
   // Auto-resize textareas
@@ -125,8 +184,12 @@ const Node = ({ data, isConnectable }) => {
     }
   }, [data.selectedVariableIds]);
   
+  // Calculate CSS classes for expanded state
+  const promptAreaClass = `prompt-area ${isPromptExpanded ? 'expanded' : ''}`;
+  const outputAreaClass = `output-area ${isOutputExpanded ? 'expanded' : ''}`;
+  
   return (
-    <div className="node">
+    <div className={`node ${isPromptExpanded || isOutputExpanded ? 'expanded-node' : ''}`}>
       {/* Target handle (Input) - Top */}
       <Handle
         type="target"
@@ -169,8 +232,10 @@ const Node = ({ data, isConnectable }) => {
         
         {showTooltip && (
           <div className="tooltip">
-            Click any connected node below to insert its variable <code>{"{NodeName}"}</code> into your prompt. 
-            The checked nodes will have their outputs included as context when you run this node.
+            Select connected nodes from the dropdown below.
+            Only the selected nodes will have their output included
+            as context when this node runs.
+            Click on the variable tags below to insert them in your prompt.
           </div>
         )}
         
@@ -203,23 +268,75 @@ const Node = ({ data, isConnectable }) => {
         )}
       </div>
       
-      {/* Prompt textarea */}
-      <textarea
-        ref={promptRef}
-        className="prompt-textarea"
-        value={prompt}
-        onChange={handlePromptChange}
-        placeholder="Type your prompt here. Click on a connected node above to insert it into your prompt."
-      />
+      {/* Prompt area with resize and expand controls */}
+      <div className={promptAreaClass}>
+        <div className="area-header">
+          <span>Prompt:</span>
+          <div className="area-controls">
+            <button 
+              className="resize-handle" 
+              ref={promptResizeRef}
+              onMouseDown={handlePromptResize}
+              title="Drag to resize"
+            >
+              ⣀
+            </button>
+            <button
+              className="expand-button"
+              onClick={togglePromptExpand}
+              title={isPromptExpanded ? "Collapse" : "Expand"}
+            >
+              {isPromptExpanded ? '↙' : '↗'}
+            </button>
+          </div>
+        </div>
+        <textarea
+          ref={promptRef}
+          className="prompt-textarea"
+          value={prompt}
+          onChange={handlePromptChange}
+          placeholder="Type your prompt here. Click on a connected node above to insert it into your prompt."
+          style={{ 
+            height: isPromptExpanded ? '400px' : `${promptHeight}px`,
+            maxHeight: isPromptExpanded ? 'none' : `${promptHeight}px`
+          }}
+        />
+      </div>
       
-      {/* Output textarea */}
-      <textarea
-        ref={outputRef}
-        className="output-textarea"
-        value={output}
-        readOnly
-        placeholder="AI Generated Output Here..."
-      />
+      {/* Output area with resize and expand controls */}
+      <div className={outputAreaClass}>
+        <div className="area-header">
+          <span>Output:</span>
+          <div className="area-controls">
+            <button 
+              className="resize-handle" 
+              ref={outputResizeRef}
+              onMouseDown={handleOutputResize}
+              title="Drag to resize"
+            >
+              ⣀
+            </button>
+            <button
+              className="expand-button"
+              onClick={toggleOutputExpand}
+              title={isOutputExpanded ? "Collapse" : "Expand"}
+            >
+              {isOutputExpanded ? '↙' : '↗'}
+            </button>
+          </div>
+        </div>
+        <textarea
+          ref={outputRef}
+          className="output-textarea"
+          value={output}
+          readOnly
+          placeholder="AI Generated Output Here..."
+          style={{ 
+            height: isOutputExpanded ? '400px' : `${outputHeight}px`,
+            maxHeight: isOutputExpanded ? 'none' : `${outputHeight}px`
+          }}
+        />
+      </div>
       
       {/* Source handle (Output) - Bottom */}
       <Handle
