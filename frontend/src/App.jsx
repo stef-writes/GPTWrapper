@@ -236,12 +236,20 @@ function Flow() {
                 console.log(`    Node Name: ${inputName}`);
                 console.log(`    Node Output: ${inputNodeOutput.substring(0, 50)}${inputNodeOutput.length > 50 ? '...' : ''}`);
               
-                // Build context data using ONLY the node name as the key
+                // Add the output with the node name as the key (for backward compatibility/direct matching)
                 contextData[inputName] = inputNodeOutput;
+                
+                // Also add the output with the node ID as the key (for stable references)
+                // Prefix with 'id:' to distinguish from name-based keys and avoid collisions
+                contextData[`id:${inputId}`] = inputNodeOutput;
+                
+                // Store a mapping from name to ID to help with template processing
+                contextData['__node_mapping'] = contextData['__node_mapping'] || {};
+                contextData['__node_mapping'][inputName] = inputId;
               });
             }
             
-            console.log("Context data being sent to backend (Simplified):", contextData);
+            console.log("Context data being sent to backend:", contextData);
             console.log("Prompt with templates:", prompt);
             
             try {
