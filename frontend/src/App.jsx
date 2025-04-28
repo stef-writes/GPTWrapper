@@ -213,7 +213,10 @@ function Flow() {
             );
           },
           onRun: async (prompt, activeInputNodeIds) => {
-            console.log(`Running node ${id} (name: ${nodeName}) with active inputs:`, activeInputNodeIds);
+            // Get the CURRENT name of the node being run, not from closure
+            const currentNode = nodes.find(n => n.id === id);
+            const currentRunnerNodeName = currentNode?.data?.nodeName || id;
+            console.log(`Running node ${id} (current name: ${currentRunnerNodeName}) with active inputs:`, activeInputNodeIds);
             
             // Prepare context data based ONLY on actively selected nodes (checked in UI)
             let contextData = {};
@@ -229,23 +232,23 @@ function Flow() {
                   inputNodeOutput = String(inputNodeOutput);
                 }
                 
+                // Get the LATEST name of the SOURCE node from the current state
                 const sourceNode = nodes.find(n => n.id === inputId);
-                const inputName = sourceNode?.data?.nodeName || inputId;
+                const sourceNodeName = sourceNode?.data?.nodeName || inputId; // Use LATEST name
                 
-                console.log(`  - Node ID: ${inputId}`);
-                console.log(`    Node Name: ${inputName}`);
-                console.log(`    Node Output: ${inputNodeOutput.substring(0, 50)}${inputNodeOutput.length > 50 ? '...' : ''}`);
+                console.log(`  - Source Node ID: ${inputId}`);
+                console.log(`    Source Node Name (Current): ${sourceNodeName}`);
+                console.log(`    Source Node Output: ${inputNodeOutput.substring(0, 50)}${inputNodeOutput.length > 50 ? '...' : ''}`);
               
                 // Add the output with the node name as the key (for backward compatibility/direct matching)
-                contextData[inputName] = inputNodeOutput;
+                contextData[sourceNodeName] = inputNodeOutput; // Use LATEST name
                 
                 // Also add the output with the node ID as the key (for stable references)
-                // Prefix with 'id:' to distinguish from name-based keys and avoid collisions
                 contextData[`id:${inputId}`] = inputNodeOutput;
                 
                 // Store a mapping from name to ID to help with template processing
                 contextData['__node_mapping'] = contextData['__node_mapping'] || {};
-                contextData['__node_mapping'][inputName] = inputId;
+                contextData['__node_mapping'][sourceNodeName] = inputId; // Use LATEST name for mapping key
               });
             }
             
