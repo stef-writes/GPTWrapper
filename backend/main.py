@@ -182,51 +182,8 @@ class Node:
         if not self.template:
             return inputs
             
-        # Create a copy to avoid modifying the original
-        processed_inputs = inputs.copy()
-        
-        try:
-            # Process each template field
-            for field_name, template_string in self.template.items():
-                # Skip if the field is not a string template
-                if not isinstance(template_string, str):
-                    continue
-                    
-                # Format the template using available inputs
-                # This uses Python's string formatting with named placeholders
-                try:
-                    # Replace namespaced keys with their values for template formatting
-                    template_context = {}
-                    
-                    # Add non-namespaced values first
-                    for key, value in inputs.items():
-                        if ":" not in key and not callable(value):
-                            template_context[key] = value
-                    
-                    # Add access to namespaced values through helper functions
-                    if "get_node_output" in inputs and callable(inputs["get_node_output"]):
-                        get_node_output = inputs["get_node_output"]
-                        
-                        # Add a function to access node outputs in templates
-                        def get_output(node_id, output_key=None):
-                            return get_node_output(node_id, output_key)
-                        
-                        template_context["get_output"] = get_output
-                    
-                    formatted_value = template_string.format(**template_context)
-                    processed_inputs[field_name] = formatted_value
-                    
-                except KeyError as e:
-                    print(f"Warning: Missing key {e} in template for node {self.node_id}")
-                except Exception as e:
-                    print(f"Error formatting template for node {self.node_id}: {e}")
-        
-        except Exception as e:
-            print(f"Error applying template for node {self.node_id}: {e}")
-            # Fall back to original inputs on error
-            return inputs
-            
-        return processed_inputs
+        # Use the global template processor for consistent processing
+        return template_processor.process_node_template(self.template, inputs, self.node_id)
 
 # --- AI Functions with Enhanced Templating --- (Replacing placeholders)
 # These functions now return a tuple: (content_dictionary, raw_api_response_object)
@@ -823,6 +780,269 @@ class DataAccessor:
             
         return result
 
+# --- Template Processor for consistent variable substitution ---
+class TemplateProcessor:
+    """
+    Unified template processing system that handles all node variable substitutions.
+    This replaces both Node._apply_template and the template processing in generate_text_node_api.
+    """
+    
+    def __init__(self, debug_mode=True):
+        """Initialize the template processor"""
+        self.debug_mode = debug_mode  # Enable detailed logging
+        
+    def log(self, message):
+        """Log messages when debug mode is enabled"""
+        if self.debug_mode:
+            print(message)
+    
+    def validate_node_references(self, template_text, available_nodes):
+        """
+        Validate that all node references in the template exist in available_nodes.
+        Returns a tuple: (is_valid, list_of_missing_nodes, list_of_found_nodes)
+        """
+        if not template_text or not isinstance(template_text, str):
+            return True, [], []
+            
+        # Find all {NodeName} references in the template
+        # This pattern matches both simple {NodeName} and indexed {NodeName[n]} references
+        reference_pattern = r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))?\}'
+        matches = re.findall(reference_pattern, template_text)
+        
+        missing_nodes = []
+        found_nodes = []
+        
+        for match in matches:
+            node_name = match[0]
+            if node_name not in available_nodes:
+                missing_nodes.append(node_name)
+            else:
+                found_nodes.append(node_name)
+        
+        is_valid = len(missing_nodes) == 0
+        return is_valid, missing_nodes, found_nodes
+    
+    def process_node_template(self, template, inputs, node_id=None):
+        """
+        Process a node's template configuration (used by Node._apply_template).
+        Returns processed inputs dictionary.
+        """
+        if not template:
+            return inputs
+            
+        # Create a copy to avoid modifying the original
+        processed_inputs = inputs.copy()
+        
+        try:
+            self.log(f"Processing node template for node: {node_id or 'unknown'}")
+            
+            # First validate we have all required inputs
+            missing_inputs = []
+            for field_name, template_string in template.items():
+                if not isinstance(template_string, str):
+                    continue
+                    
+                # Find all input references in this template
+                # Standard Python format variables like {variable_name}
+                var_pattern = r'\{([^{}]+)\}'
+                variables = re.findall(var_pattern, template_string)
+                
+                for var in variables:
+                    # Skip function references like get_output
+                    if '(' in var:
+                        continue
+                        
+                    if var not in inputs and ":" not in var:
+                        missing_inputs.append(var)
+            
+            if missing_inputs:
+                self.log(f"Warning: Template missing inputs: {missing_inputs}")
+            
+            # Process each template field
+            for field_name, template_string in template.items():
+                # Skip if the field is not a string template
+                if not isinstance(template_string, str):
+                    continue
+                    
+                try:
+                    # Replace namespaced keys with their values for template formatting
+                    template_context = {}
+                    
+                    # Add non-namespaced values first
+                    for key, value in inputs.items():
+                        if ":" not in key and not callable(value):
+                            template_context[key] = value
+                    
+                    # Add access to namespaced values through helper functions
+                    if "get_node_output" in inputs and callable(inputs["get_node_output"]):
+                        get_node_output = inputs["get_node_output"]
+                        
+                        # Add a function to access node outputs in templates
+                        def get_output(node_id, output_key=None):
+                            return get_node_output(node_id, output_key)
+                        
+                        template_context["get_output"] = get_output
+                    
+                    formatted_value = template_string.format(**template_context)
+                    processed_inputs[field_name] = formatted_value
+                    
+                    self.log(f"Processed template field '{field_name}': {formatted_value[:50]}...")
+                    
+                except KeyError as e:
+                    self.log(f"Warning: Missing key {e} in template for node {node_id}")
+                except Exception as e:
+                    self.log(f"Error formatting template for node {node_id}: {e}")
+        
+        except Exception as e:
+            self.log(f"Error applying template for node {node_id}: {e}")
+            # Fall back to original inputs on error
+            return inputs
+            
+        return processed_inputs
+    
+    def process_node_references(self, prompt_text, context_data, data_accessor=None):
+        """
+        Process a prompt text with node references (used by generate_text_node_api).
+        Returns processed prompt and a dictionary of processed node values.
+        """
+        if not prompt_text or not context_data:
+            return prompt_text, {}
+            
+        processed_prompt = prompt_text
+        processed_node_values = {}  # Track which nodes were processed and their values
+        
+        try:
+            self.log(f"Processing node references in prompt")
+            
+            # Validate node references
+            is_valid, missing_nodes, found_nodes = self.validate_node_references(
+                prompt_text, context_data.keys()
+            )
+            
+            if not is_valid:
+                self.log(f"Warning: Template references non-existent nodes: {missing_nodes}")
+                # Continue processing anyway with the nodes we do have
+            
+            if found_nodes:
+                self.log(f"Found references to nodes: {found_nodes}")
+            
+            # Step 1: Create data accessor if not provided
+            if not data_accessor and context_data:
+                data_accessor = DataAccessor(context_data)
+            
+            # Step 2: Process advanced references like {NodeName[n]} first
+            if data_accessor:
+                # Handle patterns like {Node1[2]} or {Node1:item(2)}
+                def replace_item_reference(match):
+                    full_match = match.group(0)
+                    node_name = match.group(1)
+                    item_num_str = match.group(2) or match.group(3)  # Either [2] or :item(2) format
+                    
+                    self.log(f"Processing item reference: {full_match}")
+                    self.log(f"  Node: {node_name}")
+                    self.log(f"  Item: {item_num_str}")
+                    
+                    if not data_accessor.has_node(node_name):
+                        self.log(f"  Node '{node_name}' not found")
+                        return full_match  # Node not found, return unchanged
+                    
+                    # Convert item number to int
+                    try:
+                        item_num = int(item_num_str)
+                    except ValueError:
+                        self.log(f"  Invalid item number: {item_num_str}")
+                        return full_match  # Not a valid number
+                    
+                    # Get the specific item
+                    item_content = data_accessor.get_item(node_name, item_num)
+                    if item_content:
+                        self.log(f"  Found item {item_num}: {item_content}")
+                        processed_node_values[f"{node_name}[{item_num}]"] = item_content
+                        return item_content
+                    
+                    self.log(f"  Item {item_num} not found in node {node_name}")
+                    # Fallback to original reference if item not found
+                    return full_match
+                
+                # Process item references like {Node1[2]} or {Node1:item(2)}
+                item_ref_pattern = r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))\}'
+                processed_prompt = re.sub(item_ref_pattern, replace_item_reference, processed_prompt)
+                self.log(f"After item reference processing: {processed_prompt[:100]}...")
+            
+            # Step 3: Process normal node references
+            for node_name, node_output in context_data.items():
+                # Skip empty values
+                if not node_output or (isinstance(node_output, str) and node_output.strip() == ""):
+                    continue
+                    
+                # Replace any remaining direct node references
+                template_marker = "{" + node_name + "}"
+                if template_marker in processed_prompt:
+                    self.log(f"Processing node reference: {template_marker}")
+                    self.log(f"Original node output: '{node_output}'")
+                    
+                    final_value = node_output  # Default value
+                    
+                    # Check if the node output is a simple number (for calculations)
+                    try:
+                        # First try to see if it's already a number type
+                        if isinstance(node_output, (int, float)):
+                            final_value = str(node_output)
+                            self.log(f"Numeric value detected (direct): {final_value}")
+                            processed_prompt = processed_prompt.replace(template_marker, final_value)
+                            processed_node_values[node_name] = final_value
+                            continue
+                            
+                        # Next try to convert string to number if it looks like one
+                        if isinstance(node_output, str) and node_output.strip().replace('.', '', 1).isdigit():
+                            # This will catch numbers like "2" or "3.14"
+                            final_value = node_output.strip()
+                            self.log(f"Numeric value detected (string): {final_value}")
+                            processed_prompt = processed_prompt.replace(template_marker, final_value)
+                            processed_node_values[node_name] = final_value
+                            continue
+                            
+                        # Try to extract just the number if it's a simple text answer
+                        if isinstance(node_output, str):
+                            # Look for patterns where the output is just a number with maybe some text
+                            number_pattern = r'^\s*(\d+(\.\d+)?)\s*$'
+                            match = re.search(number_pattern, node_output)
+                            if match:
+                                final_value = match.group(1)
+                                self.log(f"Numeric value detected (pattern): {final_value}")
+                                processed_prompt = processed_prompt.replace(template_marker, final_value)
+                                processed_node_values[node_name] = final_value
+                                continue
+                    except Exception as e:
+                        self.log(f"Error processing numeric node output: {e}")
+                        # Fall back to normal processing on error
+                    
+                    # Default: use the raw content value directly
+                    self.log(f"Using default string value: '{node_output}'")
+                    processed_prompt = processed_prompt.replace(template_marker, node_output)
+                    processed_node_values[node_name] = node_output
+                    
+            # Print summary 
+            self.log(f"\n--- Template Processing Summary ---")
+            self.log(f"Original prompt: {prompt_text}")
+            self.log(f"Processed nodes:")
+            for node_name, value in processed_node_values.items():
+                self.log(f"  - {node_name}: '{value}'")
+            self.log(f"Final processed prompt: {processed_prompt}")
+            self.log(f"--- End Template Processing Summary ---\n")
+            
+        except Exception as e:
+            self.log(f"Error processing template variables: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return original on severe error
+            return prompt_text, {}
+            
+        return processed_prompt, processed_node_values
+
+# Create a global instance of the template processor
+template_processor = TemplateProcessor(debug_mode=True)
+
 # !!! IMPORTANT: Global ScriptChain instance !!!
 # This instance persists across requests for the server's lifetime.
 # Good for demos, but NOT suitable for multiple concurrent users.
@@ -908,203 +1128,34 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
             print("-" * 40)
 
     # Enhanced template processing with better context
-    processed_prompt = request.prompt_text
-    context_descriptions = []
-    structured_data_info = []
-    content_insights = []
-    
-    if request.context_data:
-        try:
-            print(f"Processing template with context data: {list(request.context_data.keys())}")
-            
-            # Create DataAccessor for structured data access
-            data_accessor = DataAccessor(request.context_data)
-            
-            # Step 1: Analyze node outputs and extract structured data
-            for node_name in data_accessor.get_all_nodes():
-                analysis = data_accessor.analyze_content(node_name)
-                if not analysis:
-                    continue
-                    
-                print(f"--- Analysis for Node '{node_name}': ---")
-                print(f"  Has Numbered List: {analysis['has_numbered_list']}")
-                print(f"  Numbered Items Count: {analysis['numbered_items_count']}")
-                print(f"  Has JSON: {analysis['has_json']}")
-                print(f"  Has Table: {analysis['has_table']}")
-                
-                if analysis['has_numbered_list']:
-                    numbered_items = ContentParser.parse_numbered_list(request.context_data[node_name])
-                    print(f"  Numbered Items: {numbered_items}")
-                    
-                if analysis['has_json']:
-                    json_data = ContentParser.try_parse_json(request.context_data[node_name])
-                    print(f"  JSON Data: {json_data}")
-                
-                # Add structured data information
-                data_features = []
-                
-                if analysis["has_numbered_list"]:
-                    data_features.append(f"a numbered list with {analysis['numbered_items_count']} items")
-                    # If we have numbered items, add example access pattern to insights
-                    if analysis["numbered_items_count"] > 0:
-                        content_insights.append(
-                            f"- To reference item #2 from {node_name}, use: 'item #2 from {node_name}'"
-                        )
-                
-                if analysis["has_json"]:
-                    data_features.append("JSON data")
-                
-                if analysis["has_table"]:
-                    data_features.append("tabular data")
-                
-                if data_features:
-                    structured_data_info.append(
-                        f"- {node_name} contains: {', '.join(data_features)}"
-                    )
-                
-                # Add general content description
-                content_preview = request.context_data[node_name]
-                if content_preview:
-                    content_preview = content_preview.replace("\n", " ")[:50] + "..."
-                    context_descriptions.append(f"- {node_name} contains: {content_preview}")
-            
-            # Step 2: Process advanced references in the template
-            # Handle patterns like {Node1[2]} or {Node1:item(2)}
-            def replace_item_reference(match):
-                full_match = match.group(0)
-                node_name = match.group(1)
-                item_num_str = match.group(2) or match.group(3)  # Either [2] or :item(2) format
-                
-                print(f"Processing reference: {full_match}")
-                print(f"  Node: {node_name}")
-                print(f"  Item: {item_num_str}")
-                
-                if not data_accessor.has_node(node_name):
-                    print(f"  Node '{node_name}' not found")
-                    return full_match  # Node not found, return unchanged
-                
-                # Convert item number to int
-                try:
-                    item_num = int(item_num_str)
-                except ValueError:
-                    print(f"  Invalid item number: {item_num_str}")
-                    return full_match  # Not a valid number
-                
-                # Get the specific item
-                item_content = data_accessor.get_item(node_name, item_num)
-                if item_content:
-                    print(f"  Found item {item_num}: {item_content}")
-                    return item_content
-                
-                print(f"  Item {item_num} not found in node {node_name}")
-                # Fallback to original reference if item not found
-                return full_match
-            
-            # Process item references like {Node1[2]} or {Node1:item(2)}
-            item_ref_pattern = r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))\}'
-            processed_prompt = re.sub(item_ref_pattern, replace_item_reference, processed_prompt)
-            print(f"After item reference processing: {processed_prompt}")
-            
-            # Step 3: Process normal node references
-            processed_node_values = {}  # Track which nodes were processed and their values
-            
-            for node_name, node_output in request.context_data.items():
-                # Skip empty values
-                if not node_output or (isinstance(node_output, str) and node_output.strip() == ""):
-                    continue
-                    
-                # Replace any remaining direct node references
-                template_marker = "{" + node_name + "}"
-                if template_marker in processed_prompt:
-                    print(f"Processing node reference: {template_marker}")
-                    print(f"Original node output: '{node_output}'")
-                    
-                    final_value = node_output  # Default value
-                    
-                    # Check if the node output is a simple number (for calculations)
-                    try:
-                        # First try to see if it's already a number type
-                        if isinstance(node_output, (int, float)):
-                            final_value = str(node_output)
-                            print(f"Numeric value detected (direct): {final_value}")
-                            processed_prompt = processed_prompt.replace(template_marker, final_value)
-                            processed_node_values[node_name] = final_value
-                            continue
-                            
-                        # Next try to convert string to number if it looks like one
-                        if isinstance(node_output, str) and node_output.strip().replace('.', '', 1).isdigit():
-                            # This will catch numbers like "2" or "3.14"
-                            final_value = node_output.strip()
-                            print(f"Numeric value detected (string): {final_value}")
-                            processed_prompt = processed_prompt.replace(template_marker, final_value)
-                            processed_node_values[node_name] = final_value
-                            continue
-                            
-                        # Try to extract just the number if it's a simple text answer
-                        if isinstance(node_output, str):
-                            # Look for patterns where the output is just a number with maybe some text
-                            number_pattern = r'^\s*(\d+(\.\d+)?)\s*$'
-                            match = re.search(number_pattern, node_output)
-                            if match:
-                                final_value = match.group(1)
-                                print(f"Numeric value detected (pattern): {final_value}")
-                                processed_prompt = processed_prompt.replace(template_marker, final_value)
-                                processed_node_values[node_name] = final_value
-                                continue
-                    except Exception as e:
-                        print(f"Error processing numeric node output: {e}")
-                        # Fall back to normal processing on error
-                    
-                    # Default: use the raw content value directly
-                    print(f"Using default string value: '{node_output}'")
-                    processed_prompt = processed_prompt.replace(template_marker, node_output)
-                    processed_node_values[node_name] = node_output
-            
-            # Print summary of template processing
-            print(f"\n--- Template Processing Summary ---")
-            print(f"Original prompt: {request.prompt_text}")
-            print(f"Processed nodes:")
-            for node_name, value in processed_node_values.items():
-                print(f"  - {node_name}: '{value}'")
-            print(f"Final processed prompt: {processed_prompt}")
-            print(f"--- End Template Processing Summary ---\n")
-            
-            print(f"Template variables processed successfully")
-        except Exception as e:
-            print(f"Error processing template variables: {e}")
-            import traceback
-            traceback.print_exc()
-            # Continue with original prompt if template processing fails
-            pass
+    processed_prompt, processed_node_values = template_processor.process_node_references(
+        request.prompt_text, request.context_data, DataAccessor(request.context_data)
+    )
 
     # Enhanced system message with guidance about node relationships and data structures
     system_content = "You are a helpful AI assistant working with connected nodes of information."
     
-    if context_descriptions:
-        system_content += "\n\nYou have access to content from these nodes:\n" + "\n".join(context_descriptions)
-        
-        if structured_data_info:
-            system_content += "\n\nStructured data detected in nodes:\n" + "\n".join(structured_data_info)
+    if request.context_data:
+        system_content += "\n\nYou have access to content from these nodes:\n" + "\n".join(
+            f"- {node_name}: {content[:50]}..." if len(content) > 50 else f"- {node_name}: {content}"
+            for node_name, content in request.context_data.items()
+        )
         
         # Add explicit JSON data if detected
-        if request.context_data:
-            for node_name, content in request.context_data.items():
-                json_data = ContentParser.try_parse_json(content)
-                if json_data:
-                    system_content += f"\n\nJSON data from {node_name}:\n```json\n{json.dumps(json_data, indent=2)}\n```"
-                    # Add specific instructions for this JSON
-                    if isinstance(json_data, dict) and "countries" in json_data:
-                        countries = json_data.get("countries", [])
-                        country_names = [country.get("name") for country in countries if isinstance(country, dict) and "name" in country]
-                        if country_names:
-                            system_content += f"\n\nCountries found in {node_name}: {', '.join(country_names)}"
+        for node_name, content in request.context_data.items():
+            json_data = ContentParser.try_parse_json(content)
+            if json_data:
+                system_content += f"\n\nJSON data from {node_name}:\n```json\n{json.dumps(json_data, indent=2)}\n```"
+                # Add specific instructions for this JSON
+                if isinstance(json_data, dict) and "countries" in json_data:
+                    countries = json_data.get("countries", [])
+                    country_names = [country.get("name") for country in countries if isinstance(country, dict) and "name" in country]
+                    if country_names:
+                        system_content += f"\n\nCountries found in {node_name}: {', '.join(country_names)}"
                             
-                            # Add specific guidance on accessing country populations
-                            if any("population" in country for country in countries if isinstance(country, dict)):
-                                system_content += f"\n\nTo access population data for a specific country, look up the country by name in the JSON data."
-        
-        if content_insights:
-            system_content += "\n\nUseful content access patterns:\n" + "\n".join(content_insights)
+                        # Add specific guidance on accessing country populations
+                        if any("population" in country for country in countries if isinstance(country, dict)):
+                            system_content += f"\n\nTo access population data for a specific country, look up the country by name in the JSON data."
         
         system_content += "\n\nWhen answering:"
         system_content += "\n- Reference the specific content from nodes directly"
@@ -1257,6 +1308,36 @@ async def debug_test_reference(request: dict):
         result["details"]["is_reference_pattern"] = False
     
     return result
+
+# --- Template Validation Endpoint ---
+class TemplateValidationRequest(BaseModel):
+    prompt_text: str
+    available_nodes: List[str]
+
+class TemplateValidationResponse(BaseModel):
+    is_valid: bool
+    missing_nodes: List[str]
+    found_nodes: List[str]
+    warnings: Optional[List[str]] = None
+
+@app.post("/validate_template", response_model=TemplateValidationResponse)
+async def validate_template_api(request: TemplateValidationRequest):
+    """Validates that all node references in a template exist in the available nodes."""
+    is_valid, missing_nodes, found_nodes = template_processor.validate_node_references(
+        request.prompt_text, set(request.available_nodes)
+    )
+    
+    warnings = []
+    if not is_valid:
+        for node in missing_nodes:
+            warnings.append(f"Node reference '{node}' not found in available nodes.")
+    
+    return TemplateValidationResponse(
+        is_valid=is_valid,
+        missing_nodes=missing_nodes,
+        found_nodes=found_nodes,
+        warnings=warnings
+    )
 
 # --- Run Server --- (Existing code)
 if __name__ == "__main__":

@@ -141,12 +141,44 @@ export const executeChain = async (initialInputs = null) => {
   }
 };
 
+/**
+ * Validates a template against available nodes
+ * @param {string} promptText - The template text to validate
+ * @param {Array<string>} availableNodes - List of available node names
+ * @returns {Promise<object>} - Validation results
+ */
+export const validateTemplate = async (promptText, availableNodes = []) => {
+  try {
+    const response = await fetch(`${API_URL}/validate_template`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt_text: promptText,
+        available_nodes: availableNodes,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'Error validating template');
+    }
+
+    return response.json();
+  } catch (error) {
+    console.error('Error calling validateTemplate API:', error);
+    throw error;
+  }
+};
+
 // Export all functions as a service object
 const NodeService = {
   generateText,
   addNode,
   addEdge,
   executeChain,
+  validateTemplate,
 };
 
 export default NodeService; 
