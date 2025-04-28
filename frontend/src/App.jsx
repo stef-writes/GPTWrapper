@@ -220,7 +220,15 @@ function Flow() {
             if (activeInputNodeIds && activeInputNodeIds.length > 0) {
               console.log("Active input nodes detail:");
               activeInputNodeIds.forEach(inputId => {
-                const inputNodeOutput = nodeOutputs[inputId] || '';
+                // Ensure the output is always a string, default to empty string if null/undefined
+                let inputNodeOutput = nodeOutputs[inputId];
+                if (inputNodeOutput === null || inputNodeOutput === undefined) {
+                  inputNodeOutput = '';
+                } else {
+                  // Explicitly convert to string in case it's a number or other type
+                  inputNodeOutput = String(inputNodeOutput);
+                }
+                
                 const sourceNode = nodes.find(n => n.id === inputId);
                 const inputName = sourceNode?.data?.nodeName || inputId;
                 
@@ -256,8 +264,14 @@ function Flow() {
               
               return response.generated_text;
             } catch (error) {
-              console.error('Error generating text:', error);
-              return `Error: ${error.message}`;
+              console.error('Caught Error:', error);
+              console.log('Error type:', typeof error);
+              console.log('Error message:', error?.message);
+              console.log('Error stringified:', JSON.stringify(error));
+              
+              // Ensure we return a string message
+              const errorMessage = error?.message || 'An unknown error occurred';
+              return `Error: ${errorMessage}`;
             }
           },
         },
