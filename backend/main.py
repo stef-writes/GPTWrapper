@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import time                     # Added for timing
 from contextlib import contextmanager # Added for context manager
 import networkx as nx # Added import for graph operations
+import re # Added for regex pattern matching
+import json # Added for JSON parsing
 
 load_dotenv()
 
@@ -133,7 +135,7 @@ class Node:
 
         # Apply template if available
         processed_inputs = self._apply_template(inputs)
-        
+
         # The token tracker context manager is now placed *inside* relevant node types
         # to ensure it only runs when an actual API call is made.
         if self.node_type == "text_generation":
@@ -445,25 +447,25 @@ class ScriptChain:
         self.graph = nx.DiGraph()  # Directed graph to hold nodes and connections
         self.storage = NamespacedStorage()  # Namespaced storage to prevent key collisions
         self.callbacks = callbacks or []  # List of callback objects to notify
-    
+
     def add_node(self, node_id: str, node_type: str, input_keys: Optional[List[str]] = None, output_keys: Optional[List[str]] = None, model_config: Optional[LLMConfig] = None):
         """Adds a node (processing step) to the graph."""
         # Associates a Node object with the node_id in the networkx graph
         node_instance = Node(node_id, node_type, input_keys, output_keys, model_config)
         self.graph.add_node(node_id, node=node_instance)
-    
+
     def add_edge(self, from_node: str, to_node: str):
         """Adds a directed connection (dependency) between two nodes."""
         # Ensures that 'from_node' must execute before 'to_node'
         self.graph.add_edge(from_node, to_node)
-    
+
     def add_callback(self, callback: Callback):
         """Registers a callback object to receive execution events."""
         if isinstance(callback, Callback):
             self.callbacks.append(callback)
         else:
             print(f"Warning: Attempted to add non-Callback object: {callback}")
-    
+
     def execute(self):
         """Executes the graph nodes in topological (dependency) order."""
         try:
@@ -473,26 +475,26 @@ class ScriptChain:
             print("Error: Graph contains a cycle, cannot determine execution order.")
             return {"error": "Graph contains a cycle"}
         except Exception as e:
-            print(f"Error during topological sort: {e}")
-            return {"error": f"Failed to determine execution order: {e}"}
-        
+             print(f"Error during topological sort: {e}")
+             return {"error": f"Failed to determine execution order: {e}"}
+
         results = {}  # Stores the final output of each node by node_id
         total_tokens = 0
         total_cost = 0.0  # Use float for cost
-        
+
         print(f"--- Executing Chain (Order: {execution_order}) ---")
-        
+
         for node_id in execution_order:
             if node_id not in self.graph:
                 print(f"Error: Node '{node_id}' found in execution order but not in graph.")
                 continue  # Or handle error more formally
-            
+
             node_instance = self.graph.nodes[node_id].get("node")
             if not isinstance(node_instance, Node):
                 print(f"Error: Node '{node_id}' in graph does not contain a valid Node object.")
                 continue  # Or handle error more formally
-            
-            # --- Prepare Inputs for Node ---
+
+            # --- Prepare Inputs for Node --- 
             # Get required inputs that aren't node-specific
             inputs_for_node = {}
             
@@ -534,15 +536,15 @@ class ScriptChain:
                 results[node_id] = {"error": str(e)}
                 self.storage.store(node_id, {"error": str(e)})
                 continue  # Skip processing this node
-            
-            # --- Trigger on_node_start Callbacks ---
+
+            # --- Trigger on_node_start Callbacks --- 
             for callback in self.callbacks:
                 try:
                     callback.on_node_start(node_id, node_instance.node_type, inputs_for_node)
                 except Exception as e:
                     print(f"Error in callback {type(callback).__name__}.on_node_start for node {node_id}: {e}")
-            
-            # --- Process the Node ---
+
+            # --- Process the Node --- 
             try:
                 node_result = node_instance.process(inputs_for_node)
             except Exception as e:
@@ -551,8 +553,8 @@ class ScriptChain:
                 results[node_id] = {"error": str(e)}
                 self.storage.store(node_id, {"error": str(e)})
                 continue  # Skip storing result and callbacks for this failed node
-            
-            # --- Store Result ---
+
+            # --- Store Result --- 
             if isinstance(node_result, dict):
                 results[node_id] = node_result
                 self.storage.store(node_id, node_result)  # Store with namespace
@@ -560,30 +562,30 @@ class ScriptChain:
                 # Handle non-dict results
                 results[node_id] = {"output": node_result}  # Wrap non-dict result
                 self.storage.store(node_id, {"output": node_result})
-            
-            # --- Aggregate Token Stats ---
+
+            # --- Aggregate Token Stats --- 
             if node_instance.token_usage:
                 try:
                     total_tokens += getattr(node_instance.token_usage, 'total_tokens', 0)
                     total_cost += getattr(node_instance.token_usage, 'cost', 0.0)
                 except AttributeError:
-                    print(f"Warning: token_usage object for node {node_id} missing expected attributes.")
-            
-            # --- Trigger on_node_complete Callbacks ---
+                     print(f"Warning: token_usage object for node {node_id} missing expected attributes.")
+
+            # --- Trigger on_node_complete Callbacks --- 
             for callback in self.callbacks:
                 try:
                     callback.on_node_complete(node_id, node_instance.node_type, results.get(node_id), node_instance.token_usage)
                 except Exception as e:
                     print(f"Error in callback {type(callback).__name__}.on_node_complete for node {node_id}: {e}")
-        
-        # --- Trigger on_chain_complete Callbacks ---
+
+        # --- Trigger on_chain_complete Callbacks --- 
         print("--- Chain Execution Finished ---")
         for callback in self.callbacks:
-            try:
-                callback.on_chain_complete(results, total_tokens, total_cost)
-            except Exception as e:
-                print(f"Error in callback {type(callback).__name__}.on_chain_complete: {e}")
-        
+             try:
+                 callback.on_chain_complete(results, total_tokens, total_cost)
+             except Exception as e:
+                 print(f"Error in callback {type(callback).__name__}.on_chain_complete: {e}")
+
         # Return final results and aggregated stats
         return {
             "results": results,  # Dictionary mapping node_id to its result dictionary
@@ -662,6 +664,165 @@ class GenerateTextNodeResponse(BaseModel):
     cost: Optional[float] = None
     duration: Optional[float] = None
 
+# --- Content Parser for Structured Data ---
+class ContentParser:
+    """Parser for extracting structured data from node outputs"""
+    
+    @staticmethod
+    def parse_numbered_list(content):
+        """Extracts items from a numbered list into a dictionary"""
+        if not content or not isinstance(content, str):
+            return {}
+        
+        items = {}
+        # Match patterns like "1. Item" or "1) Item" or "1: Item"
+        pattern = r'(\d+)[.):]\s+(.*?)(?=\n\d+[.):]\s+|\Z)'
+        matches = re.finditer(pattern, content, re.DOTALL)
+        
+        for match in matches:
+            num, text = match.groups()
+            items[int(num)] = text.strip()
+        
+        return items
+    
+    @staticmethod
+    def extract_item(content, item_num):
+        """Extract a specific numbered item from content"""
+        if not isinstance(item_num, int):
+            try:
+                item_num = int(item_num)
+            except (ValueError, TypeError):
+                return None
+        
+        items = ContentParser.parse_numbered_list(content)
+        return items.get(item_num)
+    
+    @staticmethod
+    def try_parse_json(content):
+        """Attempt to parse content as JSON"""
+        if not content or not isinstance(content, str):
+            return None
+        
+        try:
+            # Find JSON-like structures (between { } or [ ])
+            json_pattern = r'(\{.*\}|\[.*\])'
+            match = re.search(json_pattern, content, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+                return json.loads(json_str)
+            return None
+        except Exception:
+            return None
+    
+    @staticmethod
+    def extract_table(content):
+        """Extract tabular data if present"""
+        if not content or not isinstance(content, str):
+            return None
+        
+        # Simple markdown table detection
+        lines = content.split('\n')
+        table_start = None
+        table_end = None
+        
+        # Look for table markers (| --- |)
+        for i, line in enumerate(lines):
+            if '|' in line and '---' in line and table_start is None:
+                table_start = i - 1  # Header row is usually above
+                continue
+            if table_start is not None and ('|' not in line or line.strip() == ''):
+                table_end = i
+                break
+        
+        if table_start is not None:
+            table_end = table_end or len(lines)
+            if table_start >= 0:
+                table_rows = lines[table_start:table_end]
+                # Convert to list of dictionaries if it has a header
+                if len(table_rows) >= 2:  # Need at least header + separator
+                    return table_rows
+        return None
+
+# --- DataAccessor Helper Class ---
+class DataAccessor:
+    """
+    Helper class to provide structured access to node data.
+    Used for advanced data extraction from node outputs.
+    """
+    
+    def __init__(self, node_data):
+        """Initialize with a dictionary of node outputs"""
+        self.node_data = node_data
+        self.parser = ContentParser()
+        
+    def get_node_content(self, node_name):
+        """Get raw content from a node"""
+        return self.node_data.get(node_name)
+        
+    def get_item(self, node_name, item_num):
+        """Get a specific numbered item from a node's output"""
+        if node_name not in self.node_data:
+            return None
+            
+        content = self.node_data[node_name]
+        return self.parser.extract_item(content, item_num)
+        
+    def get_json(self, node_name):
+        """Try to parse node output as JSON"""
+        if node_name not in self.node_data:
+            return None
+            
+        content = self.node_data[node_name]
+        return self.parser.try_parse_json(content)
+        
+    def get_table(self, node_name):
+        """Extract table data from a node if present"""
+        if node_name not in self.node_data:
+            return None
+            
+        content = self.node_data[node_name]
+        return self.parser.extract_table(content)
+        
+    def get_all_nodes(self):
+        """Get list of all available node names"""
+        return list(self.node_data.keys())
+        
+    def has_node(self, node_name):
+        """Check if a node exists"""
+        return node_name in self.node_data
+        
+    def analyze_content(self, node_name):
+        """Perform comprehensive analysis of a node's content"""
+        if not self.has_node(node_name):
+            return None
+            
+        content = self.node_data[node_name]
+        result = {
+            "has_numbered_list": False,
+            "numbered_items_count": 0,
+            "has_json": False,
+            "has_table": False,
+            "content_length": len(content) if content else 0
+        }
+        
+        # Check for numbered list
+        numbered_items = self.parser.parse_numbered_list(content)
+        if numbered_items:
+            result["has_numbered_list"] = True
+            result["numbered_items_count"] = len(numbered_items)
+            
+        # Check for JSON
+        json_data = self.parser.try_parse_json(content)
+        if json_data:
+            result["has_json"] = True
+            
+        # Check for table
+        table_data = self.parser.extract_table(content)
+        if table_data:
+            result["has_table"] = True
+            
+        return result
+
 # !!! IMPORTANT: Global ScriptChain instance !!!
 # This instance persists across requests for the server's lifetime.
 # Good for demos, but NOT suitable for multiple concurrent users.
@@ -738,43 +899,173 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         )
 
     print(f"--- Executing Single Text Generation (Model: {node_config.model}) ---")
+    print(f"--- Original Prompt: {request.prompt_text} ---")
+    if request.context_data:
+        print(f"--- Context Data: ---")
+        for node_name, content in request.context_data.items():
+            print(f"Node: {node_name}")
+            print(f"Content: {content[:200]}..." if len(content) > 200 else f"Content: {content}")
+            print("-" * 40)
 
     # Enhanced template processing with better context
     processed_prompt = request.prompt_text
     context_descriptions = []
-
+    structured_data_info = []
+    content_insights = []
+    
     if request.context_data:
         try:
             print(f"Processing template with context data: {list(request.context_data.keys())}")
             
-            # Process each node's content with proper formatting
-            for node_name, node_output in request.context_data.items():
-                # Preserve formatting and add clear delimiters around node content
-                formatted_output = f"\n\n### Content from {node_name} ###\n{node_output}\n###\n\n"
-                template_marker = "{" + node_name + "}"
-                processed_prompt = processed_prompt.replace(template_marker, formatted_output)
-                
-                # Build context descriptions for system message
-                short_preview = str(node_output).replace("\n", " ")[:50]
-                context_descriptions.append(f"- {node_name} contains: {short_preview}...")
+            # Create DataAccessor for structured data access
+            data_accessor = DataAccessor(request.context_data)
             
+            # Step 1: Analyze node outputs and extract structured data
+            for node_name in data_accessor.get_all_nodes():
+                analysis = data_accessor.analyze_content(node_name)
+                if not analysis:
+                    continue
+                    
+                print(f"--- Analysis for Node '{node_name}': ---")
+                print(f"  Has Numbered List: {analysis['has_numbered_list']}")
+                print(f"  Numbered Items Count: {analysis['numbered_items_count']}")
+                print(f"  Has JSON: {analysis['has_json']}")
+                print(f"  Has Table: {analysis['has_table']}")
+                
+                if analysis['has_numbered_list']:
+                    numbered_items = ContentParser.parse_numbered_list(request.context_data[node_name])
+                    print(f"  Numbered Items: {numbered_items}")
+                    
+                if analysis['has_json']:
+                    json_data = ContentParser.try_parse_json(request.context_data[node_name])
+                    print(f"  JSON Data: {json_data}")
+                
+                # Add structured data information
+                data_features = []
+                
+                if analysis["has_numbered_list"]:
+                    data_features.append(f"a numbered list with {analysis['numbered_items_count']} items")
+                    # If we have numbered items, add example access pattern to insights
+                    if analysis["numbered_items_count"] > 0:
+                        content_insights.append(
+                            f"- To reference item #2 from {node_name}, use: 'item #2 from {node_name}'"
+                        )
+                
+                if analysis["has_json"]:
+                    data_features.append("JSON data")
+                
+                if analysis["has_table"]:
+                    data_features.append("tabular data")
+                
+                if data_features:
+                    structured_data_info.append(
+                        f"- {node_name} contains: {', '.join(data_features)}"
+                    )
+                
+                # Add general content description
+                content_preview = request.context_data[node_name]
+                if content_preview:
+                    content_preview = content_preview.replace("\n", " ")[:50] + "..."
+                    context_descriptions.append(f"- {node_name} contains: {content_preview}")
+            
+            # Step 2: Process advanced references in the template
+            # Handle patterns like {Node1[2]} or {Node1:item(2)}
+            def replace_item_reference(match):
+                full_match = match.group(0)
+                node_name = match.group(1)
+                item_num_str = match.group(2) or match.group(3)  # Either [2] or :item(2) format
+                
+                print(f"Processing reference: {full_match}")
+                print(f"  Node: {node_name}")
+                print(f"  Item: {item_num_str}")
+                
+                if not data_accessor.has_node(node_name):
+                    print(f"  Node '{node_name}' not found")
+                    return full_match  # Node not found, return unchanged
+                
+                # Convert item number to int
+                try:
+                    item_num = int(item_num_str)
+                except ValueError:
+                    print(f"  Invalid item number: {item_num_str}")
+                    return full_match  # Not a valid number
+                
+                # Get the specific item
+                item_content = data_accessor.get_item(node_name, item_num)
+                if item_content:
+                    print(f"  Found item {item_num}: {item_content}")
+                    return item_content
+                
+                print(f"  Item {item_num} not found in node {node_name}")
+                # Fallback to original reference if item not found
+                return full_match
+            
+            # Process item references like {Node1[2]} or {Node1:item(2)}
+            item_ref_pattern = r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))\}'
+            processed_prompt = re.sub(item_ref_pattern, replace_item_reference, processed_prompt)
+            print(f"After item reference processing: {processed_prompt}")
+            
+            # Step 3: Process normal node references
+            for node_name, node_output in request.context_data.items():
+                # Create a formatted version with clear section markers
+                formatted_output = f"\n\n### Content from {node_name} ###\n{node_output}\n###\n\n"
+                
+                # Replace any remaining direct node references
+                template_marker = "{" + node_name + "}"
+                if template_marker in processed_prompt:
+                    print(f"Replacing template marker {template_marker} with formatted content")
+                    processed_prompt = processed_prompt.replace(template_marker, formatted_output)
+            
+            print(f"Final processed prompt: {processed_prompt[:200]}..." if len(processed_prompt) > 200 else f"Final processed prompt: {processed_prompt}")
             print(f"Template variables processed successfully")
         except Exception as e:
             print(f"Error processing template variables: {e}")
+            import traceback
+            traceback.print_exc()
             # Continue with original prompt if template processing fails
             pass
 
-    # Enhanced system message with guidance about node relationships
+    # Enhanced system message with guidance about node relationships and data structures
     system_content = "You are a helpful AI assistant working with connected nodes of information."
     
     if context_descriptions:
         system_content += "\n\nYou have access to content from these nodes:\n" + "\n".join(context_descriptions)
+        
+        if structured_data_info:
+            system_content += "\n\nStructured data detected in nodes:\n" + "\n".join(structured_data_info)
+        
+        # Add explicit JSON data if detected
+        if request.context_data:
+            for node_name, content in request.context_data.items():
+                json_data = ContentParser.try_parse_json(content)
+                if json_data:
+                    system_content += f"\n\nJSON data from {node_name}:\n```json\n{json.dumps(json_data, indent=2)}\n```"
+                    # Add specific instructions for this JSON
+                    if isinstance(json_data, dict) and "countries" in json_data:
+                        countries = json_data.get("countries", [])
+                        country_names = [country.get("name") for country in countries if isinstance(country, dict) and "name" in country]
+                        if country_names:
+                            system_content += f"\n\nCountries found in {node_name}: {', '.join(country_names)}"
+                            
+                            # Add specific guidance on accessing country populations
+                            if any("population" in country for country in countries if isinstance(country, dict)):
+                                system_content += f"\n\nTo access population data for a specific country, look up the country by name in the JSON data."
+        
+        if content_insights:
+            system_content += "\n\nUseful content access patterns:\n" + "\n".join(content_insights)
+        
         system_content += "\n\nWhen answering:"
         system_content += "\n- Reference the specific content from nodes directly"
         system_content += "\n- If content contains numbered items, extract and use the exact items being referenced"
+        system_content += "\n- If a question asks about a specific numbered item (e.g., 'item #2 from Node 1'), provide the exact corresponding item"
+        system_content += "\n- When working with JSON data, use the exact values from the JSON structure"
         system_content += "\n- Analyze any lists, data, or information thoroughly"
-        system_content += "\n- If a question asks about a specific numbered item (e.g., #4), provide the exact corresponding item"
+        system_content += "\n- When working with tables, maintain proper formatting"
+        system_content += "\n- If you can't find the referenced data, clearly state that it's not available"
+        system_content += "\n- Ensure you're looking at the correct node when extracting information"
 
+    print(f"System content: {system_content}")
+    
     # Prepare messages with enhanced system content
     messages_payload = [
         {"role": "system", "content": system_content},
@@ -833,12 +1124,87 @@ async def execute_api(initial_inputs: Optional[Dict[str, Any]] = None):
         print(f"Error during chain execution: {e}")
         raise HTTPException(status_code=500, detail=f"Chain execution failed: {str(e)}")
 
-# --- Deprecated Chat Endpoint --- 
-# Commenting out the old chat endpoint as it's replaced by the graph execution model
-# @app.post("/api/chat")
-# async def chat_endpoint(request: ChatRequest):
-#    """Handle chat request, call OpenAI, return response."""
-#    ...
+# --- Debug Endpoints ---
+@app.get("/debug/node_content")
+async def debug_node_content(node_content: str):
+    """Debug endpoint to test content parsing functionality."""
+    result = {
+        "original_content": node_content,
+        "analysis": {},
+        "parsed_data": {}
+    }
+    
+    # Analyze using ContentParser
+    numbered_items = ContentParser.parse_numbered_list(node_content)
+    json_data = ContentParser.try_parse_json(node_content)
+    table_data = ContentParser.extract_table(node_content)
+    
+    # Build analysis
+    result["analysis"] = {
+        "has_numbered_list": bool(numbered_items),
+        "numbered_items_count": len(numbered_items) if numbered_items else 0,
+        "has_json": json_data is not None,
+        "has_table": table_data is not None
+    }
+    
+    # Add parsed data
+    result["parsed_data"] = {
+        "numbered_items": numbered_items,
+        "json_data": json_data,
+        "table_data": table_data
+    }
+    
+    return result
+
+@app.post("/debug/test_reference")
+async def debug_test_reference(request: dict):
+    """Test endpoint for reference extraction."""
+    if "content" not in request or "reference" not in request:
+        raise HTTPException(status_code=400, detail="Request must include 'content' and 'reference' fields")
+    
+    content = request["content"]
+    reference = request["reference"]
+    
+    # Create fake context with Node1 containing the content
+    fake_context = {"Node1": content}
+    data_accessor = DataAccessor(fake_context)
+    
+    # Try to parse the reference
+    result = {
+        "original_content": content,
+        "reference": reference,
+        "parsed_result": None,
+        "details": {}
+    }
+    
+    # Check if it's an item reference
+    item_ref_pattern = r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))\}'
+    match = re.search(item_ref_pattern, reference)
+    
+    if match:
+        node_name = match.group(1)
+        item_num_str = match.group(2) or match.group(3)
+        
+        result["details"] = {
+            "node_name": node_name,
+            "item_num": item_num_str,
+            "is_valid_node": data_accessor.has_node(node_name)
+        }
+        
+        try:
+            item_num = int(item_num_str)
+            result["details"]["valid_item_num"] = True
+            
+            # Get the specific item
+            item_content = data_accessor.get_item(node_name, item_num)
+            result["parsed_result"] = item_content
+            
+        except ValueError:
+            result["details"]["valid_item_num"] = False
+    else:
+        result["details"]["is_reference_pattern"] = False
+    
+    return result
 
 # --- Run Server --- (Existing code)
 if __name__ == "__main__":

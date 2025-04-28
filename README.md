@@ -10,6 +10,8 @@ ScriptChain is a powerful visual interface for creating, connecting, and executi
 - **Multi-Input Node Support:** Nodes can receive input from multiple upstream nodes.
 - **Context Passing:** Output from one node can be used as context for downstream nodes.
 - **Template Variable System:** Insert `{NodeName}` references that get replaced with node outputs.
+- **Advanced Data References:** Access specific items with `{NodeName[n]}` syntax for lists, tables and JSON.
+- **Intelligent Data Parsing:** Automatic detection and handling of structured data (lists, JSON, tables).
 - **Variable Clicking:** Simply click on connected nodes to insert their variable templates.
 - **DAG Enforcement:** Strict directed acyclic graph rules prevent circular dependencies.
 - **OpenAI Integration:** Powered by OpenAI's GPT models with full configuration options.
@@ -88,14 +90,25 @@ The web interface will be available at http://localhost:5173.
 4. **Reference Other Nodes:** For a node that receives input, check the box beside an input node and click its button to insert a `{NodeName}` reference into your prompt.
 5. **Run Nodes:** Click "Run" to execute a single node or "Execute Flow" to run the entire workflow.
 
-### Example: Creating a Story Generator
+### Working with Structured Data
 
-1. Create "Character" node with prompt: "Create a protagonist character profile for a sci-fi story."
-2. Create "Setting" node with prompt: "Describe a futuristic setting for a sci-fi story."
-3. Connect both to a new "Story" node.
-4. In "Story" node, click to insert references: "Write a short story using {Character} in the setting of {Setting}."
-5. Check both input nodes.
-6. Run "Story" node to generate a cohesive narrative that incorporates both elements.
+ScriptChain now intelligently handles structured data between nodes:
+
+1. **Numbered Lists:** Access specific items with `{NodeName[n]}` syntax
+   - Example: `{CityList[2]}` will extract item #2 from the "CityList" node
+
+2. **JSON Data:** The system automatically parses JSON in node outputs
+   - Reference JSON directly in your prompts
+   - The system will present structured JSON data to the LLM with proper formatting
+
+3. **Combined References:** Mix and match structured data from multiple nodes
+   - Example: `What is the population of the country where {CityList[3]} is located?`
+
+### Example: Multi-Step Data Analysis
+
+1. Create a "DataGenerator" node that outputs a numbered list or JSON
+2. Create an "Analyzer" node that references specific items: `Analyze item {DataGenerator[2]}`
+3. The system will automatically extract just the referenced item
 
 ## Architecture
 
@@ -107,6 +120,8 @@ ScriptChain is built on a modern stack with a clear separation between frontend 
 - **NetworkX:** Graph management and operations.
 - **OpenAI API:** Integration with AI language models.
 - **Pydantic:** Request/response validation and serialization.
+- **ContentParser:** Intelligent parsing and extraction of structured data.
+- **DataAccessor:** Advanced data manipulation helpers for node interactions.
 
 ### Frontend
 
@@ -134,10 +149,19 @@ Connections between nodes define:
 
 ### Template System
 
-The `{NodeName}` syntax provides:
-- References to other nodes' outputs
-- Clear visual indication of dependencies
-- Automatic content substitution at runtime
+The template system provides multiple ways to reference data:
+- Basic references: `{NodeName}` - inserts full node output
+- Item references: `{NodeName[n]}` - inserts specific numbered items
+- The system automatically detects data structures in node outputs
+- LLM is guided with context-aware instructions based on data types
+
+### Data Handling
+
+ScriptChain's data parsing capabilities include:
+- **Numbered Lists:** Automatically detected and indexed 
+- **JSON Data:** Parsed and made accessible by structure
+- **Tables:** Identified and preserved in formatting
+- **Content Analysis:** Automatic detection of data types
 
 ## Plans and Vision for Enhancements
 
@@ -154,7 +178,9 @@ The `{NodeName}` syntax provides:
    - Aggregator nodes that combine multiple inputs with custom logic
 
 3. **Enhanced Context Processing**
-   - Smarter template processing with nested references
+   - ✅ Smarter template processing with nested references
+   - ✅ Advanced data structure handling (lists, JSON, tables)
+   - ✅ Intelligent data extraction and referencing
    - Context windowing for handling large outputs
    - Metadata retention across node connections
 

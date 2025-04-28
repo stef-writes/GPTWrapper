@@ -290,11 +290,11 @@ const Node = ({ data, isConnectable }) => {
             </button>
           </div>
         </div>
-        <textarea
-          ref={promptRef}
-          className="prompt-textarea"
-          value={prompt}
-          onChange={handlePromptChange}
+      <textarea
+        ref={promptRef}
+        className="prompt-textarea"
+        value={prompt}
+        onChange={handlePromptChange}
           placeholder="Type your prompt here. Click on a connected node above to insert it into your prompt."
           style={{ 
             height: isPromptExpanded ? '400px' : `${promptHeight}px`,
@@ -325,17 +325,17 @@ const Node = ({ data, isConnectable }) => {
             </button>
           </div>
         </div>
-        <textarea
-          ref={outputRef}
-          className="output-textarea"
-          value={output}
-          readOnly
-          placeholder="AI Generated Output Here..."
+      <textarea
+        ref={outputRef}
+        className="output-textarea"
+        value={output}
+        readOnly
+        placeholder="AI Generated Output Here..."
           style={{ 
             height: isOutputExpanded ? '400px' : `${outputHeight}px`,
             maxHeight: isOutputExpanded ? 'none' : `${outputHeight}px`
           }}
-        />
+      />
       </div>
       
       {/* Source handle (Output) - Bottom */}
