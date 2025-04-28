@@ -1167,13 +1167,18 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         system_content += "\n- If you can't find the referenced data, clearly state that it's not available"
         system_content += "\n- Ensure you're looking at the correct node when extracting information"
 
-    print(f"System content: {system_content}")
+    print(f"\n=== FULL SYSTEM CONTENT ===\n{system_content}\n=== END SYSTEM CONTENT ===\n")
     
     # Prepare messages with enhanced system content
     messages_payload = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": processed_prompt}
     ]
+
+    print(f"\n=== FULL MESSAGE PAYLOAD ===")
+    for idx, msg in enumerate(messages_payload):
+        print(f"Message {idx+1} ({msg['role']}):\n{msg['content']}\n---")
+    print(f"=== END MESSAGE PAYLOAD ===\n")
 
     response_content = None
     tracker_instance = None
@@ -1192,6 +1197,9 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
             tracker.update(response_dict)
             response_content = response.choices[0].message.content
             tracker_instance = tracker # Store the tracker instance
+            
+            # Log the response content
+            print(f"\n=== RESPONSE CONTENT ===\n{response_content}\n=== END RESPONSE CONTENT ===\n")
 
         if response_content is None:
             raise ValueError("Received no content from OpenAI.")
