@@ -609,8 +609,8 @@ class GenerateTextNodeRequest(BaseModel):
     prompt_text: str # The final, already formatted prompt text
     # Renamed from model_config to avoid Pydantic v2 conflict
     llm_config: Optional[ModelConfigInput] = None # Optional config override
-    # Add context_data to hold selected node outputs
-    context_data: Optional[Dict[str, str]] = None # Map of node names to their outputs
+    # Change context_data to allow Any value type to accommodate the mapping object
+    context_data: Optional[Dict[str, Any]] = None # Map of node names/ids to their outputs/mapping
 
 class GenerateTextNodeResponse(BaseModel):
     # Output model for the NEW single-node text generation endpoint
