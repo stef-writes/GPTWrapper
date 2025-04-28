@@ -6,7 +6,7 @@ const Node = ({ data, isConnectable }) => {
   const validInputNodes = data.validInputNodes || [];
   const [nodeName, setNodeName] = useState(data.nodeName || 'Node Name');
   const [prompt, setPrompt] = useState(data.prompt || '');
-  const [output, setOutput] = useState(data.output || '');
+  const [output, setOutput] = useState(String(data.output || ''));
   const [isRunning, setIsRunning] = useState(false);
   const [selectedInputNodes, setSelectedInputNodes] = useState([]);
   const [showTooltip, setShowTooltip] = useState(false);
@@ -45,9 +45,10 @@ const Node = ({ data, isConnectable }) => {
     setIsRunning(true);
     if (data.onRun) {
       const result = await data.onRun(prompt, selectedInputNodes);
-      setOutput(result);
+      const resultString = typeof result === 'string' ? result : JSON.stringify(result);
+      setOutput(resultString);
       if (data.onOutputChange) {
-        data.onOutputChange(result);
+        data.onOutputChange(resultString);
       }
     } else {
       // Mock response for testing
