@@ -809,15 +809,26 @@ class TemplateProcessor:
         reference_pattern = r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))?\}'
         matches = re.findall(reference_pattern, template_text)
         
+        # Create normalized versions of available nodes for case-insensitive matching
+        normalized_available_nodes = {node.lower().strip(): node for node in available_nodes}
+        
         missing_nodes = []
         found_nodes = []
         
         for match in matches:
             node_name = match[0]
-            if node_name not in available_nodes:
-                missing_nodes.append(node_name)
-            else:
+            normalized_node_name = node_name.lower().strip()
+            
+            # First try exact match
+            if node_name in available_nodes:
                 found_nodes.append(node_name)
+            # Then try case-insensitive match
+            elif normalized_node_name in normalized_available_nodes:
+                original_node = normalized_available_nodes[normalized_node_name]
+                found_nodes.append(node_name)  # Add the referenced name
+                self.log(f"Found node '{node_name}' using case-insensitive matching (original: '{original_node}')")
+            else:
+                missing_nodes.append(node_name)
         
         is_valid = len(missing_nodes) == 0
         return is_valid, missing_nodes, found_nodes
@@ -914,6 +925,15 @@ class TemplateProcessor:
         try:
             self.log(f"Processing node references in prompt")
             
+            # Create a normalized version of context_data keys for case-insensitive matching
+            normalized_context_data = {}
+            for key, value in context_data.items():
+                # Store both the original key and a normalized version (lowercase, trimmed)
+                normalized_key = key.lower().strip()
+                normalized_context_data[normalized_key] = (key, value)
+            
+            self.log(f"Normalized context data keys: {list(normalized_context_data.keys())}")
+            
             # Validate node references
             is_valid, missing_nodes, found_nodes = self.validate_node_references(
                 prompt_text, context_data.keys()
@@ -941,6 +961,18 @@ class TemplateProcessor:
                     self.log(f"Processing item reference: {full_match}")
                     self.log(f"  Node: {node_name}")
                     self.log(f"  Item: {item_num_str}")
+                    
+                    # Try case-insensitive matching first
+                    normalized_node_name = node_name.lower().strip()
+                    if normalized_node_name in normalized_context_data:
+                        # Use the original key and value
+                        original_key, node_output = normalized_context_data[normalized_node_name]
+                        self.log(f"  Found node '{node_name}' using normalized matching (original key: '{original_key}')")
+                        
+                        # Update data_accessor with the correct name if needed
+                        if node_name != original_key:
+                            # This is a bit hacky but adds the correct key to the data_accessor
+                            data_accessor.node_data[node_name] = node_output
                     
                     if not data_accessor.has_node(node_name):
                         self.log(f"  Node '{node_name}' not found")
@@ -975,7 +1007,7 @@ class TemplateProcessor:
                 if not node_output or (isinstance(node_output, str) and node_output.strip() == ""):
                     continue
                     
-                # Replace any remaining direct node references
+                # Replace any remaining direct node references (exact match)
                 template_marker = "{" + node_name + "}"
                 if template_marker in processed_prompt:
                     self.log(f"Processing node reference: {template_marker}")
@@ -1021,7 +1053,19 @@ class TemplateProcessor:
                     self.log(f"Using default string value: '{node_output}'")
                     processed_prompt = processed_prompt.replace(template_marker, node_output)
                     processed_node_values[node_name] = node_output
-                    
+                
+                # Also try case-insensitive matching
+                normalized_node_name = node_name.lower().strip()
+                for potential_reference in re.findall(r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))?\}', processed_prompt):
+                    potential_node_name = potential_reference[0]
+                    if potential_node_name.lower().strip() == normalized_node_name and "{" + potential_node_name + "}" in processed_prompt:
+                        template_marker = "{" + potential_node_name + "}"
+                        self.log(f"Processing node reference using case-insensitive matching: {template_marker}")
+                        self.log(f"  Matched to node: {node_name}")
+                        self.log(f"  Original node output: '{node_output}'")
+                        processed_prompt = processed_prompt.replace(template_marker, node_output)
+                        processed_node_values[potential_node_name] = node_output
+            
             # Print summary 
             self.log(f"\n--- Template Processing Summary ---")
             self.log(f"Original prompt: {prompt_text}")
