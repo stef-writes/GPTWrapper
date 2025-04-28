@@ -914,6 +914,7 @@ class TemplateProcessor:
     def process_node_references(self, prompt_text, context_data, data_accessor=None):
         """
         Process a prompt text with node references (used by generate_text_node_api).
+        Relies on case-insensitive, whitespace-trimmed matching of node names.
         Returns processed prompt and a dictionary of processed node values.
         """
         if not prompt_text or not context_data:
@@ -924,19 +925,10 @@ class TemplateProcessor:
         
         try:
             self.log(f"Processing node references in prompt")
-            
-            # Extract node mapping if available
-            node_mapping = context_data.get('__node_mapping', {})
-            if node_mapping:
-                self.log(f"Found node name-to-ID mapping: {node_mapping}")
                 
             # Create a normalized version of context_data keys for case-insensitive matching
             normalized_context_data = {}
             for key, value in context_data.items():
-                # Skip the special mapping key
-                if key == '__node_mapping':
-                    continue
-                    
                 # Store both the original key and a normalized version (lowercase, trimmed)
                 normalized_key = key.lower().strip()
                 normalized_context_data[normalized_key] = (key, value)
@@ -945,89 +937,47 @@ class TemplateProcessor:
             
             # Validate node references
             is_valid, missing_nodes, found_nodes = self.validate_node_references(
-                prompt_text, [k for k in context_data.keys() if k != '__node_mapping']
+                prompt_text, context_data.keys()
             )
             
             if not is_valid:
                 self.log(f"Warning: Template references non-existent nodes: {missing_nodes}")
-                # Continue processing anyway with the nodes we do have
-                
-                # Try to resolve missing nodes using the mapping
-                resolved_nodes = []
-                for missing_node in missing_nodes:
-                    # Check if any node maps to this name
-                    for name, node_id in node_mapping.items():
-                        if name.lower().strip() == missing_node.lower().strip():
-                            # Found a match by name
-                            resolved_nodes.append(missing_node)
-                            self.log(f"Resolved missing node '{missing_node}' via mapping to ID '{node_id}'")
-                            break
-                            
-                        # Also check for ID-prefixed keys
-                        if f"id:{node_id}" in context_data:
-                            resolved_nodes.append(missing_node)
-                            self.log(f"Resolved missing node '{missing_node}' via ID lookup")
-                            break
-                
-                if resolved_nodes:
-                    self.log(f"Resolved {len(resolved_nodes)} of {len(missing_nodes)} missing nodes via mapping")
-                    # Remove resolved nodes from missing list
-                    missing_nodes = [n for n in missing_nodes if n not in resolved_nodes]
             
             if found_nodes:
                 self.log(f"Found references to nodes: {found_nodes}")
             
             # Step 1: Create data accessor if not provided
             if not data_accessor and context_data:
-                # Filter out the special mapping key
-                filtered_context_data = {k: v for k, v in context_data.items() if k != '__node_mapping'}
-                data_accessor = DataAccessor(filtered_context_data)
+                data_accessor = DataAccessor(context_data)
             
             # Step 2: Process advanced references like {NodeName[n]} first
             if data_accessor:
                 # Handle patterns like {Node1[2]} or {Node1:item(2)}
                 def replace_item_reference(match):
                     full_match = match.group(0)
-                    node_name = match.group(1)
+                    node_name_ref = match.group(1) # The name used in the reference, e.g., "Node 1"
                     item_num_str = match.group(2) or match.group(3)  # Either [2] or :item(2) format
                     
                     self.log(f"Processing item reference: {full_match}")
-                    self.log(f"  Node: {node_name}")
+                    self.log(f"  Node Ref: {node_name_ref}")
                     self.log(f"  Item: {item_num_str}")
                     
-                    # Priority 1: Try exact match by name
-                    if data_accessor.has_node(node_name):
-                        self.log(f"  Found node '{node_name}' by exact name match")
-                    else:
-                        # Priority 2: Try case-insensitive matching by name
-                        normalized_node_name = node_name.lower().strip()
-                        if normalized_node_name in normalized_context_data:
-                            # Use the original key and value
-                            original_key, node_output = normalized_context_data[normalized_node_name]
-                            self.log(f"  Found node '{node_name}' using normalized matching (original key: '{original_key}')")
-                            
-                            # Update data_accessor with the correct key if needed
-                            if node_name != original_key:
-                                data_accessor.node_data[node_name] = node_output
+                    # Find the actual node key using normalized matching
+                    normalized_node_name_ref = node_name_ref.lower().strip()
+                    actual_node_key = None
+                    node_output = None
+                    
+                    if normalized_node_name_ref in normalized_context_data:
+                        actual_node_key, node_output = normalized_context_data[normalized_node_name_ref]
+                        self.log(f"  Found matching node key: '{actual_node_key}' using normalized matching")
                         
-                        # Priority 3: Try lookup via node mapping
-                        elif node_mapping:
-                            # Check if this name is in the mapping
-                            node_id = None
-                            for mapped_name, mapped_id in node_mapping.items():
-                                if mapped_name.lower().strip() == normalized_node_name:
-                                    node_id = mapped_id
-                                    self.log(f"  Found node '{node_name}' via mapping to ID '{node_id}'")
-                                    break
-                                    
-                            if node_id and f"id:{node_id}" in context_data:
-                                # Add this data to the accessor
-                                data_accessor.node_data[node_name] = context_data[f"id:{node_id}"]
-                    
-                    if not data_accessor.has_node(node_name):
-                        self.log(f"  Node '{node_name}' not found")
-                        return full_match  # Node not found, return unchanged
-                    
+                        # Ensure DataAccessor knows about the *actual* key
+                        if not data_accessor.has_node(actual_node_key):
+                             data_accessor.node_data[actual_node_key] = node_output
+                    else:
+                         self.log(f"  Node reference '{node_name_ref}' not found in context data")
+                         return full_match # Node not found
+
                     # Convert item number to int
                     try:
                         item_num = int(item_num_str)
@@ -1035,14 +985,15 @@ class TemplateProcessor:
                         self.log(f"  Invalid item number: {item_num_str}")
                         return full_match  # Not a valid number
                     
-                    # Get the specific item
-                    item_content = data_accessor.get_item(node_name, item_num)
+                    # Get the specific item using the *actual* node key
+                    item_content = data_accessor.get_item(actual_node_key, item_num)
                     if item_content:
                         self.log(f"  Found item {item_num}: {item_content}")
-                        processed_node_values[f"{node_name}[{item_num}]"] = item_content
+                        # Store using the name from the *reference* for the summary log
+                        processed_node_values[f"{node_name_ref}[{item_num}]"] = item_content 
                         return item_content
                     
-                    self.log(f"  Item {item_num} not found in node {node_name}")
+                    self.log(f"  Item {item_num} not found in node {actual_node_key}")
                     # Fallback to original reference if item not found
                     return full_match
                 
@@ -1051,107 +1002,67 @@ class TemplateProcessor:
                 processed_prompt = re.sub(item_ref_pattern, replace_item_reference, processed_prompt)
                 self.log(f"After item reference processing: {processed_prompt[:100]}...")
             
-            # Step 3: Process normal node references
-            for key, value in context_data.items():
-                # Skip special keys and empty values
-                if key == '__node_mapping' or not value or (isinstance(value, str) and value.strip() == ""):
-                    continue
-                    
-                # Get the node name (or ID-prefixed key)
-                node_name = key
-                node_output = value
+            # Step 3: Process normal node references {NodeName}
+            # Find all remaining normal references
+            normal_ref_pattern = r'\{([^:\}\[]+?)\}'
+            remaining_refs = re.findall(normal_ref_pattern, processed_prompt)
+            
+            for node_name_ref in remaining_refs:
+                normalized_node_name_ref = node_name_ref.lower().strip()
+                template_marker = "{" + node_name_ref + "}"
                 
-                # Replace any remaining direct node references (exact match)
-                template_marker = "{" + node_name + "}"
-                if template_marker in processed_prompt:
+                # Skip if already processed as an item reference
+                if f"{node_name_ref}[" in processed_node_values.keys(): # A bit fragile check
+                    continue 
+                
+                # Find the actual node key using normalized matching
+                if normalized_node_name_ref in normalized_context_data:
+                    actual_node_key, node_output = normalized_context_data[normalized_node_name_ref]
                     self.log(f"Processing node reference: {template_marker}")
-                    self.log(f"Original node output: '{node_output}'")
+                    self.log(f"  Found matching node key: '{actual_node_key}' using normalized matching")
+                    self.log(f"  Original node output: '{node_output}'")
                     
-                    final_value = node_output  # Default value
+                    final_value = node_output # Default value
                     
                     # Check if the node output is a simple number (for calculations)
+                    # (Keep the numeric processing logic)
                     try:
-                        # First try to see if it's already a number type
                         if isinstance(node_output, (int, float)):
                             final_value = str(node_output)
                             self.log(f"Numeric value detected (direct): {final_value}")
-                            processed_prompt = processed_prompt.replace(template_marker, final_value)
-                            processed_node_values[node_name] = final_value
-                            continue
-                            
-                        # Next try to convert string to number if it looks like one
-                        if isinstance(node_output, str) and node_output.strip().replace('.', '', 1).isdigit():
-                            # This will catch numbers like "2" or "3.14"
-                            final_value = node_output.strip()
-                            self.log(f"Numeric value detected (string): {final_value}")
-                            processed_prompt = processed_prompt.replace(template_marker, final_value)
-                            processed_node_values[node_name] = final_value
-                            continue
-                            
-                        # Try to extract just the number if it's a simple text answer
-                        if isinstance(node_output, str):
-                            # Look for patterns where the output is just a number with maybe some text
-                            number_pattern = r'^\s*(\d+(\.\d+)?)\s*$'
-                            match = re.search(number_pattern, node_output)
-                            if match:
-                                final_value = match.group(1)
-                                self.log(f"Numeric value detected (pattern): {final_value}")
-                                processed_prompt = processed_prompt.replace(template_marker, final_value)
-                                processed_node_values[node_name] = final_value
-                                continue
+                        elif isinstance(node_output, str):
+                           if node_output.strip().replace('.', '', 1).isdigit():
+                               final_value = node_output.strip()
+                               self.log(f"Numeric value detected (string): {final_value}")
+                           else:
+                               number_pattern = r'^\s*(\d+(\.\d+)?)\s*$'
+                               match = re.search(number_pattern, node_output)
+                               if match:
+                                   final_value = match.group(1)
+                                   self.log(f"Numeric value detected (pattern): {final_value}")
                     except Exception as e:
                         self.log(f"Error processing numeric node output: {e}")
-                        # Fall back to normal processing on error
+                        final_value = node_output # Fallback on error
                     
-                    # Default: use the raw content value directly
-                    self.log(f"Using default string value: '{node_output}'")
-                    processed_prompt = processed_prompt.replace(template_marker, node_output)
-                    processed_node_values[node_name] = node_output
-                
-                # Also try case-insensitive matching
-                normalized_node_name = node_name.lower().strip()
-                for potential_reference in re.findall(r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))?\}', processed_prompt):
-                    potential_node_name = potential_reference[0]
-                    if potential_node_name.lower().strip() == normalized_node_name and "{" + potential_node_name + "}" in processed_prompt:
-                        template_marker = "{" + potential_node_name + "}"
-                        self.log(f"Processing node reference using case-insensitive matching: {template_marker}")
-                        self.log(f"  Matched to node: {node_name}")
-                        self.log(f"  Original node output: '{node_output}'")
-                        processed_prompt = processed_prompt.replace(template_marker, node_output)
-                        processed_node_values[potential_node_name] = node_output
-            
-            # Step 4: Try to resolve any remaining references using the mapping
-            if node_mapping:
-                # Find all remaining unprocessed references
-                for potential_reference in re.findall(r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))?\}', processed_prompt):
-                    potential_node_name = potential_reference[0]
-                    template_marker = "{" + potential_node_name + "}"
+                    if final_value != node_output:
+                         self.log(f"Using processed value: '{final_value}'")
+                    else:
+                         self.log(f"Using default string value: '{node_output}'")
+                         
+                    processed_prompt = processed_prompt.replace(template_marker, str(final_value))
+                    processed_node_values[node_name_ref] = final_value # Log with the reference name
                     
-                    # Skip if we've already processed this reference
-                    if potential_node_name in processed_node_values:
-                        continue
-                        
-                    self.log(f"Trying to resolve remaining reference: {template_marker} using mapping")
-                    
-                    # Try to find a match in the mapping
-                    for mapped_name, mapped_id in node_mapping.items():
-                        if mapped_name.lower().strip() == potential_node_name.lower().strip():
-                            # Found a match by name, now check if we have the ID data
-                            id_key = f"id:{mapped_id}"
-                            if id_key in context_data:
-                                node_output = context_data[id_key]
-                                self.log(f"  Resolved via mapping to ID {mapped_id}")
-                                self.log(f"  Original node output: '{node_output}'")
-                                processed_prompt = processed_prompt.replace(template_marker, node_output)
-                                processed_node_values[potential_node_name] = node_output
-                                break
+                else:
+                     self.log(f"Node reference {template_marker} not found in context data (after normalization)")
             
             # Print summary 
             self.log(f"\n--- Template Processing Summary ---")
             self.log(f"Original prompt: {prompt_text}")
             self.log(f"Processed nodes:")
             for node_name, value in processed_node_values.items():
-                self.log(f"  - {node_name}: '{value}'")
+                # Ensure value is string for logging
+                value_str = str(value) if not isinstance(value, str) else value
+                self.log(f"  - {node_name}: '{value_str[:100]}...'")
             self.log(f"Final processed prompt: {processed_prompt}")
             self.log(f"--- End Template Processing Summary ---\n")
             
