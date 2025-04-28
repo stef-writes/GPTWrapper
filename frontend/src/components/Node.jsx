@@ -44,30 +44,25 @@ const Node = ({ data, isConnectable }) => {
     if (isRunning) return;
     setIsRunning(true);
     if (data.onRun) {
-      try {
-        // Pass the prompt AND the list of actively selected input node IDs
-        const result = await data.onRun(prompt, selectedInputNodes);
-        setOutput(result);
-        if (data.onOutputChange) {
-          data.onOutputChange(result);
-        }
-      } catch (error) {
-        setOutput(`Error: ${error.message}`);
-      } finally {
-        setIsRunning(false);
+      const result = await data.onRun(prompt, selectedInputNodes);
+      setOutput(result);
+      if (data.onOutputChange) {
+        data.onOutputChange(result);
       }
     } else {
       // Mock response for testing
       setTimeout(() => {
         setOutput('AI generated output would appear here...');
-        setIsRunning(false);
       }, 1000);
     }
+    setIsRunning(false);
   };
   
   // Insert variable template into prompt textarea
   const insertVariable = (varName) => {
     if (!promptRef.current) return;
+    
+    console.log(`Inserting variable: ${varName}`);
     
     const textarea = promptRef.current;
     const cursorPos = textarea.selectionStart;
@@ -76,17 +71,19 @@ const Node = ({ data, isConnectable }) => {
     
     // Create template with spaces for better formatting
     const template = `{${varName}}`;
+    console.log(`Created template: ${template}`);
     
     // Create new prompt with inserted template
     const newPrompt = textBefore + template + textAfter;
+    console.log(`New prompt with template: ${newPrompt}`);
     
     // Update prompt state
-        setPrompt(newPrompt);
+    setPrompt(newPrompt);
     
     // Notify parent of the change
-        if (data.onPromptChange) {
-          data.onPromptChange(newPrompt);
-        }
+    if (data.onPromptChange) {
+      data.onPromptChange(newPrompt);
+    }
     
     // Set focus back to textarea and position cursor after inserted template
     setTimeout(() => {
