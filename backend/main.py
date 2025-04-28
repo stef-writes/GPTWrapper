@@ -1259,6 +1259,67 @@ async def debug_node_content(node_content: str):
     
     return result
 
+@app.post("/debug/process_template")
+async def debug_process_template(request: dict):
+    """Debug endpoint to test template processing directly."""
+    if "prompt" not in request or "context_data" not in request:
+        raise HTTPException(status_code=400, detail="Request must include 'prompt' and 'context_data' fields")
+    
+    prompt = request["prompt"]
+    context_data = request["context_data"]
+    
+    print(f"Debug process template request:")
+    print(f"Prompt: {prompt}")
+    print(f"Context data: {context_data}")
+    
+    # Process the template using our unified processor
+    processed_prompt, processed_node_values = template_processor.process_node_references(
+        prompt, context_data
+    )
+    
+    # Return detailed results for debugging
+    return {
+        "original_prompt": prompt,
+        "context_data": context_data,
+        "processed_prompt": processed_prompt,
+        "processed_node_values": processed_node_values,
+        "validation": {
+            "is_valid": len(template_processor.validate_node_references(prompt, context_data.keys())[1]) == 0,
+            "missing_nodes": template_processor.validate_node_references(prompt, context_data.keys())[1],
+            "found_nodes": template_processor.validate_node_references(prompt, context_data.keys())[2],
+        }
+    }
+
+# --- Template Validation Endpoint ---
+class TemplateValidationRequest(BaseModel):
+    prompt_text: str
+    available_nodes: List[str]
+
+class TemplateValidationResponse(BaseModel):
+    is_valid: bool
+    missing_nodes: List[str]
+    found_nodes: List[str]
+    warnings: Optional[List[str]] = None
+
+@app.post("/validate_template", response_model=TemplateValidationResponse)
+async def validate_template_api(request: TemplateValidationRequest):
+    """Validates that all node references in a template exist in the available nodes."""
+    is_valid, missing_nodes, found_nodes = template_processor.validate_node_references(
+        request.prompt_text, set(request.available_nodes)
+    )
+    
+    warnings = []
+    if not is_valid:
+        for node in missing_nodes:
+            warnings.append(f"Node reference '{node}' not found in available nodes.")
+    
+    return TemplateValidationResponse(
+        is_valid=is_valid,
+        missing_nodes=missing_nodes,
+        found_nodes=found_nodes,
+        warnings=warnings
+    )
+
 @app.post("/debug/test_reference")
 async def debug_test_reference(request: dict):
     """Test endpoint for reference extraction."""
@@ -1308,36 +1369,6 @@ async def debug_test_reference(request: dict):
         result["details"]["is_reference_pattern"] = False
     
     return result
-
-# --- Template Validation Endpoint ---
-class TemplateValidationRequest(BaseModel):
-    prompt_text: str
-    available_nodes: List[str]
-
-class TemplateValidationResponse(BaseModel):
-    is_valid: bool
-    missing_nodes: List[str]
-    found_nodes: List[str]
-    warnings: Optional[List[str]] = None
-
-@app.post("/validate_template", response_model=TemplateValidationResponse)
-async def validate_template_api(request: TemplateValidationRequest):
-    """Validates that all node references in a template exist in the available nodes."""
-    is_valid, missing_nodes, found_nodes = template_processor.validate_node_references(
-        request.prompt_text, set(request.available_nodes)
-    )
-    
-    warnings = []
-    if not is_valid:
-        for node in missing_nodes:
-            warnings.append(f"Node reference '{node}' not found in available nodes.")
-    
-    return TemplateValidationResponse(
-        is_valid=is_valid,
-        missing_nodes=missing_nodes,
-        found_nodes=found_nodes,
-        warnings=warnings
-    )
 
 # --- Run Server --- (Existing code)
 if __name__ == "__main__":

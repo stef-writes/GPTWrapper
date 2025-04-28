@@ -213,15 +213,20 @@ function Flow() {
             );
           },
           onRun: async (prompt, activeInputNodeIds) => {
-            console.log(`Running node ${id} with active inputs:`, activeInputNodeIds);
+            console.log(`Running node ${id} (name: ${nodeName}) with active inputs:`, activeInputNodeIds);
             
             // Prepare context data based ONLY on actively selected nodes (checked in UI)
             let contextData = {};
             if (activeInputNodeIds && activeInputNodeIds.length > 0) {
+              console.log("Active input nodes detail:");
               activeInputNodeIds.forEach(inputId => {
                 const inputNodeOutput = nodeOutputs[inputId] || '';
                 const sourceNode = nodes.find(n => n.id === inputId);
                 const inputName = sourceNode?.data?.nodeName || inputId;
+                
+                console.log(`  - Node ID: ${inputId}`);
+                console.log(`    Node Name: ${inputName}`);
+                console.log(`    Node Output: ${inputNodeOutput.substring(0, 50)}${inputNodeOutput.length > 50 ? '...' : ''}`);
               
                 // Build the context data with the output from selected nodes
                 contextData[inputName] = inputNodeOutput;
@@ -229,6 +234,7 @@ function Flow() {
             }
             
             console.log("Context data being sent to backend:", contextData);
+            console.log("Prompt with templates:", prompt);
             
             try {
               // Send the prompt text (with {NodeName} templates) and context data separately
