@@ -222,7 +222,7 @@ function Flow() {
                 const inputNodeOutput = nodeOutputs[inputId] || '';
                 const sourceNode = nodes.find(n => n.id === inputId);
                 const inputName = sourceNode?.data?.nodeName || inputId;
-                
+              
                 // Build the context data with the output from selected nodes
                 contextData[inputName] = inputNodeOutput;
               });
