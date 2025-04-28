@@ -50,7 +50,13 @@ def main():
     test_case = {
         "prompt": "Isolate and define the key terms in this question: {Question}",
         "context_data": {
-            "Question": "How does algorithmic curation reshape our intellectual development and cultural perspectives?"
+            "Question": "How does algorithmic curation reshape our intellectual development and cultural perspectives?",
+            # Add node mapping to simulate what the frontend sends
+            "__node_mapping": {
+                "Question": "abc123-fake-uuid"
+            },
+            # Add ID-based entry
+            "id:abc123-fake-uuid": "How does algorithmic curation reshape our intellectual development and cultural perspectives?"
         }
     }
     
@@ -58,7 +64,17 @@ def main():
     if len(sys.argv) > 2:
         node_name = sys.argv[1]
         node_content = sys.argv[2]
-        test_case["context_data"] = {node_name: node_content}
+        fake_uuid = "uuid-" + node_name.replace(" ", "-").lower()
+        
+        test_case["context_data"] = {
+            node_name: node_content,
+            # Add node mapping
+            "__node_mapping": {
+                node_name: fake_uuid
+            },
+            # Add ID-based entry
+            f"id:{fake_uuid}": node_content
+        }
         
         if len(sys.argv) > 3:
             test_case["prompt"] = sys.argv[3]

@@ -925,9 +925,18 @@ class TemplateProcessor:
         try:
             self.log(f"Processing node references in prompt")
             
+            # Extract node mapping if available
+            node_mapping = context_data.get('__node_mapping', {})
+            if node_mapping:
+                self.log(f"Found node name-to-ID mapping: {node_mapping}")
+                
             # Create a normalized version of context_data keys for case-insensitive matching
             normalized_context_data = {}
             for key, value in context_data.items():
+                # Skip the special mapping key
+                if key == '__node_mapping':
+                    continue
+                    
                 # Store both the original key and a normalized version (lowercase, trimmed)
                 normalized_key = key.lower().strip()
                 normalized_context_data[normalized_key] = (key, value)
@@ -936,19 +945,43 @@ class TemplateProcessor:
             
             # Validate node references
             is_valid, missing_nodes, found_nodes = self.validate_node_references(
-                prompt_text, context_data.keys()
+                prompt_text, [k for k in context_data.keys() if k != '__node_mapping']
             )
             
             if not is_valid:
                 self.log(f"Warning: Template references non-existent nodes: {missing_nodes}")
                 # Continue processing anyway with the nodes we do have
+                
+                # Try to resolve missing nodes using the mapping
+                resolved_nodes = []
+                for missing_node in missing_nodes:
+                    # Check if any node maps to this name
+                    for name, node_id in node_mapping.items():
+                        if name.lower().strip() == missing_node.lower().strip():
+                            # Found a match by name
+                            resolved_nodes.append(missing_node)
+                            self.log(f"Resolved missing node '{missing_node}' via mapping to ID '{node_id}'")
+                            break
+                            
+                        # Also check for ID-prefixed keys
+                        if f"id:{node_id}" in context_data:
+                            resolved_nodes.append(missing_node)
+                            self.log(f"Resolved missing node '{missing_node}' via ID lookup")
+                            break
+                
+                if resolved_nodes:
+                    self.log(f"Resolved {len(resolved_nodes)} of {len(missing_nodes)} missing nodes via mapping")
+                    # Remove resolved nodes from missing list
+                    missing_nodes = [n for n in missing_nodes if n not in resolved_nodes]
             
             if found_nodes:
                 self.log(f"Found references to nodes: {found_nodes}")
             
             # Step 1: Create data accessor if not provided
             if not data_accessor and context_data:
-                data_accessor = DataAccessor(context_data)
+                # Filter out the special mapping key
+                filtered_context_data = {k: v for k, v in context_data.items() if k != '__node_mapping'}
+                data_accessor = DataAccessor(filtered_context_data)
             
             # Step 2: Process advanced references like {NodeName[n]} first
             if data_accessor:
@@ -962,17 +995,34 @@ class TemplateProcessor:
                     self.log(f"  Node: {node_name}")
                     self.log(f"  Item: {item_num_str}")
                     
-                    # Try case-insensitive matching first
-                    normalized_node_name = node_name.lower().strip()
-                    if normalized_node_name in normalized_context_data:
-                        # Use the original key and value
-                        original_key, node_output = normalized_context_data[normalized_node_name]
-                        self.log(f"  Found node '{node_name}' using normalized matching (original key: '{original_key}')")
+                    # Priority 1: Try exact match by name
+                    if data_accessor.has_node(node_name):
+                        self.log(f"  Found node '{node_name}' by exact name match")
+                    else:
+                        # Priority 2: Try case-insensitive matching by name
+                        normalized_node_name = node_name.lower().strip()
+                        if normalized_node_name in normalized_context_data:
+                            # Use the original key and value
+                            original_key, node_output = normalized_context_data[normalized_node_name]
+                            self.log(f"  Found node '{node_name}' using normalized matching (original key: '{original_key}')")
+                            
+                            # Update data_accessor with the correct key if needed
+                            if node_name != original_key:
+                                data_accessor.node_data[node_name] = node_output
                         
-                        # Update data_accessor with the correct name if needed
-                        if node_name != original_key:
-                            # This is a bit hacky but adds the correct key to the data_accessor
-                            data_accessor.node_data[node_name] = node_output
+                        # Priority 3: Try lookup via node mapping
+                        elif node_mapping:
+                            # Check if this name is in the mapping
+                            node_id = None
+                            for mapped_name, mapped_id in node_mapping.items():
+                                if mapped_name.lower().strip() == normalized_node_name:
+                                    node_id = mapped_id
+                                    self.log(f"  Found node '{node_name}' via mapping to ID '{node_id}'")
+                                    break
+                                    
+                            if node_id and f"id:{node_id}" in context_data:
+                                # Add this data to the accessor
+                                data_accessor.node_data[node_name] = context_data[f"id:{node_id}"]
                     
                     if not data_accessor.has_node(node_name):
                         self.log(f"  Node '{node_name}' not found")
@@ -1002,11 +1052,15 @@ class TemplateProcessor:
                 self.log(f"After item reference processing: {processed_prompt[:100]}...")
             
             # Step 3: Process normal node references
-            for node_name, node_output in context_data.items():
-                # Skip empty values
-                if not node_output or (isinstance(node_output, str) and node_output.strip() == ""):
+            for key, value in context_data.items():
+                # Skip special keys and empty values
+                if key == '__node_mapping' or not value or (isinstance(value, str) and value.strip() == ""):
                     continue
                     
+                # Get the node name (or ID-prefixed key)
+                node_name = key
+                node_output = value
+                
                 # Replace any remaining direct node references (exact match)
                 template_marker = "{" + node_name + "}"
                 if template_marker in processed_prompt:
@@ -1065,6 +1119,32 @@ class TemplateProcessor:
                         self.log(f"  Original node output: '{node_output}'")
                         processed_prompt = processed_prompt.replace(template_marker, node_output)
                         processed_node_values[potential_node_name] = node_output
+            
+            # Step 4: Try to resolve any remaining references using the mapping
+            if node_mapping:
+                # Find all remaining unprocessed references
+                for potential_reference in re.findall(r'\{([^:\}\[]+)(?:\[(\d+)\]|\:item\((\d+)\))?\}', processed_prompt):
+                    potential_node_name = potential_reference[0]
+                    template_marker = "{" + potential_node_name + "}"
+                    
+                    # Skip if we've already processed this reference
+                    if potential_node_name in processed_node_values:
+                        continue
+                        
+                    self.log(f"Trying to resolve remaining reference: {template_marker} using mapping")
+                    
+                    # Try to find a match in the mapping
+                    for mapped_name, mapped_id in node_mapping.items():
+                        if mapped_name.lower().strip() == potential_node_name.lower().strip():
+                            # Found a match by name, now check if we have the ID data
+                            id_key = f"id:{mapped_id}"
+                            if id_key in context_data:
+                                node_output = context_data[id_key]
+                                self.log(f"  Resolved via mapping to ID {mapped_id}")
+                                self.log(f"  Original node output: '{node_output}'")
+                                processed_prompt = processed_prompt.replace(template_marker, node_output)
+                                processed_node_values[potential_node_name] = node_output
+                                break
             
             # Print summary 
             self.log(f"\n--- Template Processing Summary ---")
