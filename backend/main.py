@@ -1006,17 +1006,69 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
             print(f"After item reference processing: {processed_prompt}")
             
             # Step 3: Process normal node references
+            processed_node_values = {}  # Track which nodes were processed and their values
+            
             for node_name, node_output in request.context_data.items():
-                # Create a formatted version with clear section markers
-                formatted_output = f"\n\n### Content from {node_name} ###\n{node_output}\n###\n\n"
-                
+                # Skip empty values
+                if not node_output or (isinstance(node_output, str) and node_output.strip() == ""):
+                    continue
+                    
                 # Replace any remaining direct node references
                 template_marker = "{" + node_name + "}"
                 if template_marker in processed_prompt:
-                    print(f"Replacing template marker {template_marker} with formatted content")
-                    processed_prompt = processed_prompt.replace(template_marker, formatted_output)
+                    print(f"Processing node reference: {template_marker}")
+                    print(f"Original node output: '{node_output}'")
+                    
+                    final_value = node_output  # Default value
+                    
+                    # Check if the node output is a simple number (for calculations)
+                    try:
+                        # First try to see if it's already a number type
+                        if isinstance(node_output, (int, float)):
+                            final_value = str(node_output)
+                            print(f"Numeric value detected (direct): {final_value}")
+                            processed_prompt = processed_prompt.replace(template_marker, final_value)
+                            processed_node_values[node_name] = final_value
+                            continue
+                            
+                        # Next try to convert string to number if it looks like one
+                        if isinstance(node_output, str) and node_output.strip().replace('.', '', 1).isdigit():
+                            # This will catch numbers like "2" or "3.14"
+                            final_value = node_output.strip()
+                            print(f"Numeric value detected (string): {final_value}")
+                            processed_prompt = processed_prompt.replace(template_marker, final_value)
+                            processed_node_values[node_name] = final_value
+                            continue
+                            
+                        # Try to extract just the number if it's a simple text answer
+                        if isinstance(node_output, str):
+                            # Look for patterns where the output is just a number with maybe some text
+                            number_pattern = r'^\s*(\d+(\.\d+)?)\s*$'
+                            match = re.search(number_pattern, node_output)
+                            if match:
+                                final_value = match.group(1)
+                                print(f"Numeric value detected (pattern): {final_value}")
+                                processed_prompt = processed_prompt.replace(template_marker, final_value)
+                                processed_node_values[node_name] = final_value
+                                continue
+                    except Exception as e:
+                        print(f"Error processing numeric node output: {e}")
+                        # Fall back to normal processing on error
+                    
+                    # Default: use the raw content value directly
+                    print(f"Using default string value: '{node_output}'")
+                    processed_prompt = processed_prompt.replace(template_marker, node_output)
+                    processed_node_values[node_name] = node_output
             
-            print(f"Final processed prompt: {processed_prompt[:200]}..." if len(processed_prompt) > 200 else f"Final processed prompt: {processed_prompt}")
+            # Print summary of template processing
+            print(f"\n--- Template Processing Summary ---")
+            print(f"Original prompt: {request.prompt_text}")
+            print(f"Processed nodes:")
+            for node_name, value in processed_node_values.items():
+                print(f"  - {node_name}: '{value}'")
+            print(f"Final processed prompt: {processed_prompt}")
+            print(f"--- End Template Processing Summary ---\n")
+            
             print(f"Template variables processed successfully")
         except Exception as e:
             print(f"Error processing template variables: {e}")
