@@ -35,7 +35,7 @@ app.add_middleware(
 
 # --- LLM Configuration Class --- (Copied from user input)
 class LLMConfig:
-    def __init__(self, model="gpt-4", temperature=0.7, max_tokens=150):
+    def __init__(self, model="gpt-4", temperature=0.7, max_tokens=1250):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -45,7 +45,7 @@ class LLMConfig:
 default_llm_config = LLMConfig(
     model="gpt-4",        # Or "gpt-3.5-turbo", etc.
     temperature=0.7,      # Controls randomness (0.0=deterministic, 1.0=more random)
-    max_tokens=150        # Max length of the AI's generated response
+    max_tokens=1250        # Max length of the AI's generated response
 )
 
 # --- Token Usage Tracking --- (Copied from user input)
@@ -1255,8 +1255,12 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
     user_req_lower = processed_prompt.lower()
 
     # Prioritize more specific keywords first
-    if any(verb in user_req_lower for verb in ["extract", "list", "find", "get item"]):
-        primary_instruction = f"Your task is to EXTRACT the specific information requested by the user: \\\"{processed_prompt}\\\" directly from the provided node content."
+    # --- Refined handling for definition tasks ---
+    if any(verb in user_req_lower for verb in ["define", "definition of", "explain terms"]):
+        primary_instruction = f"Your task is to first IDENTIFY the key terms requested by the user: \\\"{processed_prompt}\\\". Then, using your knowledge, PROVIDE a clear definition for each identified term. You may use the provided node content for context if needed to understand the request. Note any ambiguity or terms that cannot be defined."
+    # --- End refined handling ---
+    elif any(verb in user_req_lower for verb in ["extract", "list", "find", "get item"]):
+        primary_instruction = f"Your task is to EXTRACT the specific information requested by the user: \\\"{processed_prompt}\\\" directly from the provided node content. If the information is not present, state that clearly."
     elif any(verb in user_req_lower for verb in ["analyze", "compare", "evaluate"]):
         primary_instruction = f"Your task is to ANALYZE the subject matter described in the node content, based on the user's request: \\\"{processed_prompt}\\\""
     elif any(verb in user_req_lower for verb in ["summarize", "explain"]):
@@ -1278,7 +1282,7 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         else:
              system_content += "\\nNo specific node content provided for context."
 
-    print(f"\\n=== FULL SYSTEM CONTENT ===\\n{system_content}\\n=== END SYSTEM CONTENT ===\\n")
+    print(f"\n=== FULL SYSTEM CONTENT ===\n{system_content}\n=== END SYSTEM CONTENT ===\n")
     
     # Prepare messages with enhanced system content
     messages_payload = [
@@ -1286,10 +1290,10 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         {"role": "user", "content": processed_prompt}
     ]
 
-    print(f"\\n=== FULL MESSAGE PAYLOAD ===")
+    print(f"\n=== FULL MESSAGE PAYLOAD ===")
     for idx, msg in enumerate(messages_payload):
-        print(f"Message {idx+1} ({msg['role']}):\\n{msg['content']}\\n---")
-    print(f"=== END MESSAGE PAYLOAD ===\\n")
+        print(f"Message {idx+1} ({msg['role']}):\\\n{msg['content']}\\\n---")
+    print(f"=== END MESSAGE PAYLOAD ===\n")
 
     response_content = None
     tracker_instance = None
@@ -1310,7 +1314,7 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
             tracker_instance = tracker # Store the tracker instance
             
             # Log the response content
-            print(f"\\n=== RESPONSE CONTENT ===\\n{response_content}\\n=== END RESPONSE CONTENT ===\\n")
+            print(f"\n=== RESPONSE CONTENT ===\n{response_content}\n=== END RESPONSE CONTENT ===\n")
 
         if response_content is None:
             raise ValueError("Received no content from OpenAI.")
