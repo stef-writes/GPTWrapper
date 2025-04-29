@@ -406,17 +406,27 @@ class ScriptChain:
         self.graph = nx.DiGraph()  # Directed graph to hold nodes and connections
         self.storage = NamespacedStorage()  # Namespaced storage to prevent key collisions
         self.callbacks = callbacks or []  # List of callback objects to notify
+        self.node_versions = {}  # Track versions of node outputs
+        self.node_dependencies = {}  # Track which nodes have been used as inputs for others
 
     def add_node(self, node_id: str, node_type: str, input_keys: Optional[List[str]] = None, output_keys: Optional[List[str]] = None, model_config: Optional[LLMConfig] = None):
         """Adds a node (processing step) to the graph."""
         # Associates a Node object with the node_id in the networkx graph
         node_instance = Node(node_id, node_type, input_keys, output_keys, model_config)
         self.graph.add_node(node_id, node=node_instance)
+        # Initialize version tracking for this node
+        if node_id not in self.node_versions:
+            self.node_versions[node_id] = 0
 
     def add_edge(self, from_node: str, to_node: str):
         """Adds a directed connection (dependency) between two nodes."""
         # Ensures that 'from_node' must execute before 'to_node'
         self.graph.add_edge(from_node, to_node)
+        
+        # Track this dependency for manual execution as well
+        if to_node not in self.node_dependencies:
+            self.node_dependencies[to_node] = set()
+        self.node_dependencies[to_node].add(from_node)
 
     def add_callback(self, callback: Callback):
         """Registers a callback object to receive execution events."""
@@ -424,6 +434,39 @@ class ScriptChain:
             self.callbacks.append(callback)
         else:
             print(f"Warning: Attempted to add non-Callback object: {callback}")
+            
+    def node_needs_update(self, node_id):
+        """Check if a node needs updating based on dependency changes."""
+        if node_id not in self.node_dependencies:
+            return False  # No dependencies to check
+            
+        # Get last execution version of this node (0 if never executed)
+        node_last_version = self.node_versions.get(node_id, 0)
+        
+        # Check if any dependencies have been updated since this node was last executed
+        for dep_node in self.node_dependencies[node_id]:
+            dep_version = self.node_versions.get(dep_node, 0)
+            # If dependency version is higher than when this node was last executed, update needed
+            if dep_version > node_last_version:
+                return True
+                
+        return False
+
+    def increment_node_version(self, node_id):
+        """Increment the version of a node, indicating its output has changed."""
+        self.node_versions[node_id] = self.node_versions.get(node_id, 0) + 1
+        print(f"Node {node_id} version incremented to {self.node_versions[node_id]}")
+        
+        # Don't clear the node's own data - that would erase what we just generated!
+        # Only clear data for nodes that depend on this one
+        if node_id in self.node_dependencies:
+            # Find all nodes that have this node as a dependency
+            for dependent_node_id, dependencies in self.node_dependencies.items():
+                if node_id in dependencies and dependent_node_id != node_id:
+                    # Only clear data for dependent nodes, not the node itself
+                    if self.storage.has_node(dependent_node_id):
+                        print(f"Clearing stored results for dependent node {dependent_node_id}")
+                        self.storage.data[dependent_node_id] = {}
 
     def execute(self):
         """Executes the graph nodes in topological (dependency) order."""
@@ -442,6 +485,19 @@ class ScriptChain:
         total_cost = 0.0  # Use float for cost
 
         print(f"--- Executing Chain (Order: {execution_order}) ---")
+        
+        # Before execution, check which nodes need updates due to dependency changes
+        nodes_needing_updates = []
+        for node_id in execution_order:
+            if self.node_needs_update(node_id):
+                nodes_needing_updates.append(node_id)
+                # Clear any existing results for this node
+                if self.storage.has_node(node_id):
+                    print(f"Clearing cached results for node {node_id} due to dependency changes")
+                    self.storage.data[node_id] = {}
+                    
+        if nodes_needing_updates:
+            print(f"Nodes needing updates due to dependency changes: {nodes_needing_updates}")
 
         for node_id in execution_order:
             if node_id not in self.graph:
@@ -452,13 +508,19 @@ class ScriptChain:
             if not isinstance(node_instance, Node):
                 print(f"Error: Node '{node_id}' in graph does not contain a valid Node object.")
                 continue  # Or handle error more formally
+                
+            # Record dependency relationship for future reference
+            upstream_nodes = list(self.graph.predecessors(node_id))
+            if upstream_nodes:
+                if node_id not in self.node_dependencies:
+                    self.node_dependencies[node_id] = set()
+                for upstream_id in upstream_nodes:
+                    self.node_dependencies[node_id].add(upstream_id)
+                print(f"Node {node_id} depends on: {self.node_dependencies[node_id]}")
 
             # --- Prepare Inputs for Node --- 
             # Get required inputs that aren't node-specific
             inputs_for_node = {}
-            
-            # Find direct upstream nodes that provide inputs
-            upstream_nodes = list(self.graph.predecessors(node_id))
             
             # Collect outputs from each upstream node
             for upstream_id in upstream_nodes:
@@ -521,6 +583,12 @@ class ScriptChain:
                 # Handle non-dict results
                 results[node_id] = {"output": node_result}  # Wrap non-dict result
                 self.storage.store(node_id, {"output": node_result})
+                
+            # --- Update node version after successful execution ---
+            # Each time a node is successfully processed, increment its version
+            # This signals to downstream nodes that they need to re-execute
+            self.increment_node_version(node_id)
+            print(f"Node {node_id} execution complete, version incremented to {self.node_versions[node_id]}")
 
             # --- Aggregate Token Stats --- 
             if node_instance.token_usage:
@@ -937,7 +1005,7 @@ class TemplateProcessor:
             # Exclude the special mapping key and ID-prefixed keys from this direct lookup map
             normalized_context_data = {}
             for key, value in context_data.items():
-                if key == '__node_mapping' or key.startswith('id:'):
+                if key == '__node_mapping' or key == '__current_node':
                     continue
                 normalized_key = key.lower().strip()
                 normalized_context_data[normalized_key] = (key, value)
@@ -945,9 +1013,10 @@ class TemplateProcessor:
             self.log(f"Normalized context data keys for name matching: {list(normalized_context_data.keys())}")
             
             # Validate node references against all available keys (names and IDs)
-            available_keys_for_validation = [k for k in context_data.keys() if k != '__node_mapping']
+            available_keys_for_validation = [k for k in context_data.keys() 
+                if k != '__node_mapping' and k != '__current_node']
             is_valid, missing_nodes, found_nodes = self.validate_node_references(
-                prompt_text, available_keys_for_validation
+                prompt_text, set(available_keys_for_validation)
             )
             
             # We don't necessarily fail on missing nodes here, as mapping might resolve them later
@@ -961,7 +1030,8 @@ class TemplateProcessor:
             # Important: Pass the *full* context_data (including id: keys) to DataAccessor
             # but filter out the mapping key itself
             if not data_accessor and context_data:
-                filtered_context_data = {k: v for k, v in context_data.items() if k != '__node_mapping'}
+                filtered_context_data = {k: v for k, v in context_data.items() 
+                    if k != '__node_mapping' and k != '__current_node'}
                 data_accessor = DataAccessor(filtered_context_data)
             
             # Step 2: Process advanced references like {NodeName[n]} first
@@ -980,41 +1050,32 @@ class TemplateProcessor:
                     actual_node_key_for_data = None
                     node_output_for_data = None
                     
-                    # Lookup Priority:
-                    # 1. Exact name match in context_data
-                    if node_name_ref in context_data:
+                    # Lookup Priority (IMPROVED - id lookup first):
+                    # 1. Try to get the node ID from the mapping if available
+                    node_id = node_mapping.get(node_name_ref)
+                    if node_id:
+                        id_key = f"id:{node_id}"
+                        if id_key in context_data:
+                            actual_node_key_for_data = id_key  # Use the ID key for data lookup
+                            node_output_for_data = context_data[id_key]
+                            self.log(f"  Found node '{node_name_ref}' via mapping to ID '{node_id}' (using key '{id_key}')")
+                    
+                    # 2. If not found by ID, try exact name match
+                    if actual_node_key_for_data is None and node_name_ref in context_data:
                         actual_node_key_for_data = node_name_ref
                         node_output_for_data = context_data[node_name_ref]
                         self.log(f"  Found node '{node_name_ref}' by exact name match.")
-                    else:
-                        # 2. Normalized name match in normalized_context_data
+                    
+                    # 3. If still not found, try normalized name match
+                    if actual_node_key_for_data is None:
                         normalized_node_name_ref = node_name_ref.lower().strip()
                         if normalized_node_name_ref in normalized_context_data:
                             actual_node_key_for_data, node_output_for_data = normalized_context_data[normalized_node_name_ref]
                             self.log(f"  Found node '{node_name_ref}' using normalized matching (actual key: '{actual_node_key_for_data}')")
-                        else:
-                             # 3. Use mapping to find ID, then lookup id: key
-                            node_id = node_mapping.get(node_name_ref) # Try exact name in mapping first
-                            if not node_id:
-                                # Try normalized name in mapping
-                                for map_name, map_id in node_mapping.items():
-                                     if map_name.lower().strip() == normalized_node_name_ref:
-                                         node_id = map_id
-                                         break
-                                         
-                            if node_id:
-                                id_key = f"id:{node_id}"
-                                if id_key in context_data:
-                                    actual_node_key_for_data = id_key # Use the ID key for data lookup
-                                    node_output_for_data = context_data[id_key]
-                                    self.log(f"  Found node '{node_name_ref}' via mapping to ID '{node_id}' (using key '{id_key}')")
-                                else:
-                                     self.log(f"  Mapped node '{node_name_ref}' to ID '{node_id}', but key '{id_key}' not in context_data.")
-                            else:
-                                 self.log(f"  Node reference '{node_name_ref}' not found by name, normalized name, or mapping.")
-
+                        
                     if actual_node_key_for_data is None:
-                        return full_match # Cannot resolve this reference
+                        self.log(f"  Node reference '{node_name_ref}' not found by ID, name, or normalized name.")
+                        return full_match  # Cannot resolve this reference
 
                     # Ensure DataAccessor has the data under the *actual* key we found
                     if not data_accessor.has_node(actual_node_key_for_data):
@@ -1060,36 +1121,29 @@ class TemplateProcessor:
                 node_output = None
                 actual_node_key = None
 
-                # Lookup Priority (same as for item refs):
-                # 1. Exact name match
-                if node_name_ref in context_data:
+                # Lookup Priority (IMPROVED - ID lookup first):
+                # 1. Try to get the node ID from the mapping if available
+                node_id = node_mapping.get(node_name_ref)
+                if node_id:
+                    # Direct ID reference
+                    id_key = f"id:{node_id}"
+                    if id_key in context_data:
+                        actual_node_key = id_key
+                        node_output = context_data[id_key]
+                        self.log(f"  Found via mapping to ID '{node_id}' (key: '{id_key}')")
+                
+                # 2. If not found by ID, try direct name match
+                if node_output is None and node_name_ref in context_data:
                     actual_node_key = node_name_ref
                     node_output = context_data[node_name_ref]
                     self.log(f"  Found by exact name match: '{actual_node_key}'")
-                else:
-                    # 2. Normalized name match
+                
+                # 3. If still not found, try normalized name match
+                if node_output is None:
                     normalized_node_name_ref = node_name_ref.lower().strip()
                     if normalized_node_name_ref in normalized_context_data:
                         actual_node_key, node_output = normalized_context_data[normalized_node_name_ref]
                         self.log(f"  Found by normalized name match: '{actual_node_key}'")
-                    else:
-                        # 3. Mapping to ID
-                        node_id = node_mapping.get(node_name_ref) # Try exact name map
-                        if not node_id:
-                            for map_name, map_id in node_mapping.items(): # Try normalized map
-                                if map_name.lower().strip() == normalized_node_name_ref:
-                                    node_id = map_id
-                                    break
-                        if node_id:
-                            id_key = f"id:{node_id}"
-                            if id_key in context_data:
-                                actual_node_key = id_key
-                                node_output = context_data[id_key]
-                                self.log(f"  Found via mapping to ID '{node_id}' (key: '{id_key}')")
-                            else:
-                                self.log(f"  Mapped to ID '{node_id}', but key '{id_key}' not in context_data.")
-                        else:
-                            self.log(f"  Reference '{node_name_ref}' not found by any method.")
 
                 if node_output is not None:
                     self.log(f"  Original node output: '{node_output}'")
@@ -1120,6 +1174,7 @@ class TemplateProcessor:
                     self.log(f"  Replaced {template_marker} with: '{final_value_str[:100]}...'")
                 else:
                     # Keep the original template marker if not resolved
+                    self.log(f"  Could not resolve reference: {template_marker}")
                     new_processed_prompt += template_marker
                     
                 last_end = end
@@ -1150,25 +1205,31 @@ class TemplateProcessor:
 # Create a global instance of the template processor
 template_processor = TemplateProcessor(debug_mode=True)
 
-# !!! IMPORTANT: Global ScriptChain instance !!!
-# This instance persists across requests for the server's lifetime.
-# Good for demos, but NOT suitable for multiple concurrent users.
-# In a real application, you would manage chain instances per user/session.
-print("--- Initializing Global ScriptChain Instance ---")
-global_script_chain = ScriptChain()
-global_script_chain.add_callback(LoggingCallback())
+# --- ScriptChain Storage ---
+# We'll use a dictionary to store separate ScriptChain instances for each session
+script_chain_store = {}
 
-# --- API Routes --- 
+# Helper function to get or create a ScriptChain for a session
+def get_script_chain(session_id):
+    """Get or create a ScriptChain instance for the given session ID."""
+    if session_id not in script_chain_store:
+        print(f"Creating new ScriptChain for session {session_id}")
+        chain = ScriptChain()
+        chain.add_callback(LoggingCallback())
+        script_chain_store[session_id] = chain
+    return script_chain_store[session_id]
 
+# --- API Routes ---
 @app.get("/")
 def read_root():
     return {"message": "ScriptChain Backend Running"}
 
-# --- Graph Construction Endpoints --- 
+# --- Add Session ID parameter to all relevant API calls ---
 
 @app.post("/add_node", status_code=201)
-async def add_node_api(node: NodeInput):
-    """Adds a node to the *global* script chain via API."""
+async def add_node_api(node: NodeInput, session_id: str = "default"):
+    """Adds a node to the script chain via API."""
+    script_chain = get_script_chain(session_id)
     llm_config_for_node = default_llm_config
     # Use the renamed field 'llm_config' here
     if node.llm_config:
@@ -1179,7 +1240,7 @@ async def add_node_api(node: NodeInput):
             max_tokens=node.llm_config.max_tokens
         )
     try:
-        global_script_chain.add_node(
+        script_chain.add_node(
             # ... (arguments remain the same, model_config arg is correct here) ...
             node_id=node.node_id,
             node_type=node.node_type,
@@ -1187,35 +1248,38 @@ async def add_node_api(node: NodeInput):
             output_keys=node.output_keys,
             model_config=llm_config_for_node # This maps to the Node class __init__ param
         )
-        print(f"Added node: {node.node_id}")
+        print(f"Added node: {node.node_id} for session {session_id}")
         return {"message": f"Node '{node.node_id}' added successfully."}
     except Exception as e:
         print(f"Error adding node {node.node_id}: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to add node: {str(e)}")
 
 @app.post("/add_edge", status_code=201)
-async def add_edge_api(edge: EdgeInput):
-    """Adds an edge to the *global* script chain via API."""
+async def add_edge_api(edge: EdgeInput, session_id: str = "default"):
+    """Adds an edge to the script chain via API."""
+    script_chain = get_script_chain(session_id)
     # Basic validation: Check if nodes exist before adding edge
-    if edge.from_node not in global_script_chain.graph or edge.to_node not in global_script_chain.graph:
+    if edge.from_node not in script_chain.graph or edge.to_node not in script_chain.graph:
         raise HTTPException(status_code=404, detail=f"Node(s) not found: '{edge.from_node}' or '{edge.to_node}'")
     # --- CYCLE PREVENTION ---
     # Temporarily add the edge and check for cycles
-    global_script_chain.graph.add_edge(edge.from_node, edge.to_node)
-    if not nx.is_directed_acyclic_graph(global_script_chain.graph):
-        global_script_chain.graph.remove_edge(edge.from_node, edge.to_node)
+    script_chain.graph.add_edge(edge.from_node, edge.to_node)
+    if not nx.is_directed_acyclic_graph(script_chain.graph):
+        script_chain.graph.remove_edge(edge.from_node, edge.to_node)
         raise HTTPException(status_code=400, detail="Adding this edge would create a cycle. Please check your node connections.")
     
-    print(f"Added edge: {edge.from_node} -> {edge.to_node}")
+    print(f"Added edge: {edge.from_node} -> {edge.to_node} for session {session_id}")
     return {"message": f"Edge from '{edge.from_node}' to '{edge.to_node}' added successfully."}
 
-# --- Single Node Execution Endpoint --- (NEW)
+# --- Generate Text Node API Route ---
 @app.post("/generate_text_node", response_model=GenerateTextNodeResponse)
-async def generate_text_node_api(request: GenerateTextNodeRequest):
+async def generate_text_node_api(request: GenerateTextNodeRequest, session_id: str = "default"):
     """Executes a single text generation call based on provided prompt text."""
+    script_chain = get_script_chain(session_id)
+    
     # --- Log the raw incoming request data --- 
     try:
-        print("\n=== RAW generate_text_node_api Request ===")
+        print(f"\n=== RAW generate_text_node_api Request (Session: {session_id}) ===")
         print(f"Prompt Text: {request.prompt_text}")
         print(f"Context Data Received: {request.context_data}")
         print(f"LLM Config Received: {request.llm_config}")
@@ -1223,6 +1287,84 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
     except Exception as log_e:
         print(f"Error logging raw request: {log_e}")
     # --- End Logging --- 
+
+    # Extract node mapping information from context data
+    node_mapping = request.context_data.get('__node_mapping', {}) if request.context_data else {}
+    current_node_id = None  # The ID of the node being executed
+    input_node_id = None    # The ID of a node that provides input
+    
+    # Identify the current node (if this is a node execution)
+    if '__current_node' in request.context_data:
+        current_node_id = request.context_data['__current_node']
+        print(f"Explicit current node ID: {current_node_id}")
+        
+    # Detect if this is a simple node output update request
+    # (i.e., user is re-generating content for an existing node)
+    if current_node_id is None and 'node_id' in request.context_data:
+        current_node_id = request.context_data['node_id']
+        print(f"Found node_id in context: {current_node_id}")
+    
+    # Look for template references in the prompt to identify dependencies
+    if '{' in request.prompt_text:
+        dependency_pattern = r'\{([^}:]+)(?:\[.*\])?\}'
+        referenced_nodes = re.findall(dependency_pattern, request.prompt_text)
+        for node_name in referenced_nodes:
+            if node_name in node_mapping:
+                input_node_id = node_mapping[node_name]
+                print(f"Found input node: {node_name} with ID: {input_node_id}")
+            
+            # If this is not a node with ID in the mapping, check if we're supposed to
+            # generate new content for a dependency node
+            elif node_name in request.context_data:
+                content = request.context_data[node_name]
+                print(f"Found input node {node_name} with content: {content}")
+
+    # For each node in the node_mapping, check if its value has changed
+    # by comparing to what's in storage
+    nodes_with_updated_content = []
+    for node_name, node_id in node_mapping.items():
+        # Skip the node that is currently being executed
+        if node_id == current_node_id:
+            continue
+            
+        # Compare provided content with stored content
+        if node_name in request.context_data:
+            provided_content = request.context_data[node_name]
+            stored_content = None
+            
+            # Get the stored content if the node exists in storage
+            if script_chain.storage.has_node(node_id):
+                # Get the first value in the node's data (simplified assumption)
+                node_data = script_chain.storage.get_node_output(node_id)
+                if node_data:
+                    first_key = next(iter(node_data))
+                    stored_content = node_data.get(first_key)
+            
+            # If content has changed, update the storage
+            if provided_content != stored_content:
+                print(f"Node {node_name} (ID: {node_id}) content has changed:")
+                print(f"  Old: {stored_content}")
+                print(f"  New: {provided_content}")
+                
+                # Update the storage directly
+                script_chain.storage.store(node_id, {"generated_text": provided_content})
+                
+                # Increment the node version to trigger dependency updates
+                script_chain.increment_node_version(node_id)
+                
+                nodes_with_updated_content.append(node_id)
+    
+    if nodes_with_updated_content:
+        print(f"Updated content for nodes: {nodes_with_updated_content}")
+        
+        # For any node that depends on the updated nodes, reset its version
+        for dependent_node_id, dependencies in script_chain.node_dependencies.items():
+            for updated_node_id in nodes_with_updated_content:
+                if updated_node_id in dependencies:
+                    print(f"Marking node {dependent_node_id} for refresh due to dependency changes")
+                    # Clear any existing results
+                    if script_chain.storage.has_node(dependent_node_id):
+                        script_chain.storage.data[dependent_node_id] = {}
     
     if not client:
         raise HTTPException(status_code=500, detail="OpenAI client not set up. Check API key.")
@@ -1241,14 +1383,29 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
     if request.context_data:
         print(f"--- Context Data: ---")
         for node_name, content in request.context_data.items():
-            print(f"Node: {node_name}")
-            print(f"Content: {content[:200]}..." if len(content) > 200 else f"Content: {content}")
+            if node_name == '__node_mapping':
+                print(f"Node: {node_name}")
+                print(f"Content: {content}")
+            else:
+                print(f"Node: {node_name}")
+                print(f"Content: {content[:200]}..." if isinstance(content, str) and len(content) > 200 else f"Content: {content}")
             print("-" * 40)
 
     # Enhanced template processing with better context
     processed_prompt, processed_node_values = template_processor.process_node_references(
         request.prompt_text, request.context_data, DataAccessor(request.context_data)
     )
+    
+    # Auto-detect the current node if we haven't identified it yet
+    if current_node_id is None and '__node_mapping' in request.context_data:
+        # Look at nodes in the mapping where values weren't used in templating
+        # This node is likely the one being executed
+        for node_name, node_id in request.context_data['__node_mapping'].items():
+            # If this node name isn't in the processed values, it might be the current node
+            if node_name not in processed_node_values and node_name in request.context_data:
+                current_node_id = node_id
+                print(f"Auto-detected current node: {node_name} ({current_node_id})")
+                break
 
     # --- Determine Task-Specific Instruction ---
     primary_instruction = f"Your task is to address the user's request: \\\"{processed_prompt}\\\"" # Default
@@ -1315,6 +1472,26 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
             
             # Log the response content
             print(f"\n=== RESPONSE CONTENT ===\n{response_content}\n=== END RESPONSE CONTENT ===\n")
+            
+            # If we identified the current node, store the result and increment version
+            if current_node_id:
+                # Store the result in the global chain's storage
+                # Store with BOTH "generated_text" key (API convention) and just "output" key
+                # for easier access by other parts of the system
+                result_data = {
+                    "generated_text": response_content,  # Standard API response key
+                    "output": response_content,          # Simpler key for general use
+                    "content": response_content          # Alternative key some components might use
+                }
+                script_chain.storage.store(current_node_id, result_data)
+                
+                # Update the node version
+                script_chain.increment_node_version(current_node_id)
+                print(f"Updated node {current_node_id} with new content and incremented version")
+                
+                # Output what's actually in storage for debugging
+                stored_data = script_chain.storage.get_node_output(current_node_id)
+                print(f"Stored data for node {current_node_id}: {stored_data}")
 
         if response_content is None:
             raise ValueError("Received no content from OpenAI.")
@@ -1333,16 +1510,76 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         print(f"Error during single text generation: {e}")
         raise HTTPException(status_code=500, detail=f"Failed text generation: {str(e)}")
 
-# --- Graph Execution Endpoint --- (Potentially less used now)
+@app.post("/get_node_outputs")
+async def get_node_outputs(request: Dict[str, List[str]], session_id: str = "default"):
+    """Retrieves the current output values for specified nodes from the script chain."""
+    script_chain = get_script_chain(session_id)
+    try:
+        node_ids = request.get("node_ids", [])
+        if not node_ids:
+            return {}
+            
+        result = {}
+        print(f"Fetching outputs for nodes: {node_ids} (Session: {session_id})")
+        
+        # For debugging: show all storage
+        print(f"Current storage state for session {session_id}:")
+        for node_id, data in script_chain.storage.data.items():
+            print(f"  Node {node_id}: {data}")
+        
+        for node_id in node_ids:
+            if script_chain.storage.has_node(node_id):
+                node_data = script_chain.storage.get_node_output(node_id)
+                print(f"Node {node_id} data: {node_data}")
+                
+                if node_data:
+                    # Try several output key patterns in priority order
+                    # This makes the endpoint more robust to different node types
+                    output_keys = ["generated_text", "output", "content", "result"]
+                    
+                    # First try the standard output keys
+                    found_output = False
+                    for key in output_keys:
+                        if key in node_data:
+                            result[node_id] = node_data[key]
+                            found_output = True
+                            print(f"Node {node_id}: found output under key '{key}'")
+                            break
+                    
+                    # If no standard key found, use the first available key
+                    if not found_output and node_data:
+                        first_key = next(iter(node_data))
+                        result[node_id] = node_data[first_key]
+                        print(f"Node {node_id}: used first available key '{first_key}'")
+                    
+                    # Convert None to empty string for consistency
+                    if result.get(node_id) is None:
+                        result[node_id] = ""
+                else:
+                    print(f"Node {node_id} exists but has no data")
+            else:
+                print(f"Node {node_id} not found in storage")
+                    
+        print(f"Returning outputs for {len(result)} nodes: {result}")
+        return result
+    except Exception as e:
+        print(f"Error retrieving node outputs: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve node outputs: {str(e)}")
+
 @app.post("/execute")
-async def execute_api(initial_inputs: Optional[Dict[str, Any]] = None):
-    """Executes the *global* AI-driven node chain."""
-    print("--- Received /execute request (Full Graph) ---")
-    global_script_chain.storage = initial_inputs or {}
-    print(f"Initial storage set to: {global_script_chain.storage}")
+async def execute_api(initial_inputs: Optional[Dict[str, Any]] = None, session_id: str = "default"):
+    """Executes the AI-driven node chain."""
+    script_chain = get_script_chain(session_id)
+    print(f"--- Received /execute request (Session: {session_id}) ---")
+    if initial_inputs:
+        for key, value in initial_inputs.items():
+            script_chain.storage.data[key] = value
+        print(f"Initial storage set to: {script_chain.storage.data}")
 
     try:
-        results = global_script_chain.execute()
+        results = script_chain.execute()
         if results and "error" in results:
              raise HTTPException(status_code=400, detail=results["error"])
         return results

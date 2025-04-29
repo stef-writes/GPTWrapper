@@ -2,6 +2,11 @@
 
 const API_URL = 'http://localhost:8000';
 
+// Create a unique session ID for this browser session
+// In a production app, this might come from authentication or be stored in localStorage
+const SESSION_ID = 'session_' + Math.random().toString(36).substring(2, 15);
+console.log(`Using session ID: ${SESSION_ID}`);
+
 /**
  * Sends a prompt to the backend API to generate text
  * @param {string} prompt - The prompt text
@@ -24,7 +29,7 @@ export const generateText = async (prompt, config = null, contextData = null) =>
       payload.context_data = contextData;
     }
 
-    const response = await fetch(`${API_URL}/generate_text_node`, {
+    const response = await fetch(`${API_URL}/generate_text_node?session_id=${SESSION_ID}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -55,7 +60,7 @@ export const generateText = async (prompt, config = null, contextData = null) =>
  */
 export const addNode = async (nodeId, nodeType, inputKeys = [], outputKeys = [], config = null) => {
   try {
-    const response = await fetch(`${API_URL}/add_node`, {
+    const response = await fetch(`${API_URL}/add_node?session_id=${SESSION_ID}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -89,7 +94,7 @@ export const addNode = async (nodeId, nodeType, inputKeys = [], outputKeys = [],
  */
 export const addEdge = async (fromNode, toNode) => {
   try {
-    const response = await fetch(`${API_URL}/add_edge`, {
+    const response = await fetch(`${API_URL}/add_edge?session_id=${SESSION_ID}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -121,7 +126,7 @@ export const executeChain = async (initialInputs = null) => {
   try {
     console.log('Executing chain with initial inputs:', initialInputs);
     
-    const response = await fetch(`${API_URL}/execute`, {
+    const response = await fetch(`${API_URL}/execute?session_id=${SESSION_ID}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -149,7 +154,7 @@ export const executeChain = async (initialInputs = null) => {
  */
 export const validateTemplate = async (promptText, availableNodes = []) => {
   try {
-    const response = await fetch(`${API_URL}/validate_template`, {
+    const response = await fetch(`${API_URL}/validate_template?session_id=${SESSION_ID}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -172,6 +177,39 @@ export const validateTemplate = async (promptText, availableNodes = []) => {
   }
 };
 
+/**
+ * Retrieves the latest output values for specified nodes
+ * @param {Array<string>} nodeIds - Array of node IDs to fetch outputs for
+ * @returns {Promise<object>} - Map of node IDs to their output values
+ */
+export const getNodeOutputs = async (nodeIds) => {
+  try {
+    // Since we don't have a dedicated endpoint for this yet,
+    // this is a workaround to get node outputs from the backend's storage
+    // In a production system, you'd implement a proper API endpoint
+    
+    // First try to get from the backend's storage using execute with empty input
+    const response = await fetch(`${API_URL}/get_node_outputs?session_id=${SESSION_ID}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ node_ids: nodeIds }),
+    });
+
+    if (!response.ok) {
+      // If the endpoint doesn't exist or fails, return empty object
+      console.warn("get_node_outputs endpoint failed or doesn't exist, using local values");
+      return {};
+    }
+
+    return response.json();
+  } catch (error) {
+    console.error('Error fetching node outputs:', error);
+    return {}; // Return empty object on error
+  }
+};
+
 // Export all functions as a service object
 const NodeService = {
   generateText,
@@ -179,6 +217,7 @@ const NodeService = {
   addEdge,
   executeChain,
   validateTemplate,
+  getNodeOutputs,
 };
 
 export default NodeService; 

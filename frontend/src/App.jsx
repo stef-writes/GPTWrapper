@@ -218,54 +218,132 @@ function Flow() {
             const currentRunnerNodeName = currentNode?.data?.nodeName || id;
             console.log(`Running node ${id} (current name: ${currentRunnerNodeName}) with active inputs:`, activeInputNodeIds);
             
+            // First, fetch the latest data from the backend for all input nodes
+            let latestNodeOutputs = {};
+            if (activeInputNodeIds && activeInputNodeIds.length > 0) {
+              try {
+                console.log("Fetching latest node outputs from backend...");
+                latestNodeOutputs = await NodeService.getNodeOutputs(activeInputNodeIds);
+                console.log("Latest node outputs from backend:", latestNodeOutputs);
+              } catch (error) {
+                console.warn("Error fetching node outputs:", error);
+                // If the fetch fails, we'll use the local state (already in nodeOutputs)
+                latestNodeOutputs = {};
+              }
+            }
+            
             // Prepare context data based ONLY on actively selected nodes (checked in UI)
             let contextData = {};
+            
+            // Always use the __node_mapping to help backend understand node name -> ID relationships
+            contextData['__node_mapping'] = {};
+            
             if (activeInputNodeIds && activeInputNodeIds.length > 0) {
-              console.log("Active input nodes detail:");
+              console.log("Building context data using latest node outputs:");
+              
               activeInputNodeIds.forEach(inputId => {
-                // Ensure the output is always a string, default to empty string if null/undefined
-                let inputNodeOutput = nodeOutputs[inputId];
-                if (inputNodeOutput === null || inputNodeOutput === undefined) {
+                // 1. First determine the value to use - prefer the latest from backend
+                let inputNodeOutput;
+                
+                // Use the latest value from backend if available
+                if (latestNodeOutputs[inputId]) {
+                  inputNodeOutput = latestNodeOutputs[inputId];
+                  console.log(`Using latest value from backend for ${inputId}: ${inputNodeOutput.substring(0, 30)}...`);
+                } 
+                // Fall back to local state if backend value not available
+                else if (nodeOutputs[inputId]) {
+                  inputNodeOutput = nodeOutputs[inputId];
+                  console.log(`Using local value for ${inputId}: ${inputNodeOutput.substring(0, 30)}...`);
+                }
+                // Default to empty string if no value is available
+                else {
                   inputNodeOutput = '';
-                } else {
-                  // Explicitly convert to string in case it's a number or other type
-                  inputNodeOutput = String(inputNodeOutput);
+                  console.log(`No value available for ${inputId}, using empty string`);
                 }
                 
-                // Get the LATEST name of the SOURCE node from the current state
+                // 2. Get the current SOURCE node name from the live nodes state
                 const sourceNode = nodes.find(n => n.id === inputId);
-                const sourceNodeName = sourceNode?.data?.nodeName || inputId; // Use LATEST name
+                const sourceNodeName = sourceNode?.data?.nodeName || inputId;
                 
-                console.log(`  - Source Node ID: ${inputId}`);
-                console.log(`    Source Node Name (Current): ${sourceNodeName}`);
-                console.log(`    Source Node Output: ${inputNodeOutput.substring(0, 50)}${inputNodeOutput.length > 50 ? '...' : ''}`);
-              
-                // Add the output with the node name as the key (for backward compatibility/direct matching)
-                contextData[sourceNodeName] = inputNodeOutput; // Use LATEST name
+                // 3. Store the mapping from node name to ID for template processing
+                contextData['__node_mapping'][sourceNodeName] = inputId;
                 
-                // Also add the output with the node ID as the key (for stable references)
+                // 4. PRIMARY DATA STORAGE: Always store by ID (with 'id:' prefix)
+                //    This ensures data is always retrievable by a stable ID
                 contextData[`id:${inputId}`] = inputNodeOutput;
                 
-                // Store a mapping from name to ID to help with template processing
-                contextData['__node_mapping'] = contextData['__node_mapping'] || {};
-                contextData['__node_mapping'][sourceNodeName] = inputId; // Use LATEST name for mapping key
+                // 5. SECONDARY DATA STORAGE: Also store by name for backward compatibility
+                //    and easier template use, but this is not the primary source
+                contextData[sourceNodeName] = inputNodeOutput;
+                
+                console.log(`  Added context for node ${sourceNodeName} (ID: ${inputId})`);
               });
             }
             
-            console.log("Context data being sent to backend:", contextData);
-            console.log("Prompt with templates:", prompt);
+            // Add the current node's ID to the context
+            contextData['__current_node'] = id;
+            
+            console.log("Final context data being sent to backend:", contextData);
             
             try {
               // Send the prompt text (with {NodeName} templates) and context data separately
               // The backend can use contextData to replace templates or as additional context
               const response = await NodeService.generateText(prompt, null, contextData);
               
+              // Update this node's output in local state
+              const newOutput = response.generated_text;
+              
+              // Update the local state for future use
               setNodeOutputs(prev => ({
                 ...prev,
-                [id]: response.generated_text
+                [id]: newOutput
               }));
               
-              return response.generated_text;
+              // Update the visible output in the node
+              setNodes(prevNodes => 
+                prevNodes.map(node => {
+                  if (node.id === id) {
+                    return {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        output: newOutput // Update visible output
+                      }
+                    };
+                  }
+                  return node;
+                })
+              );
+              
+              // If this node is an input to other nodes, log that those nodes
+              // will need fresh data next time they run
+              const affectedNodes = edges
+                .filter(edge => edge.source === id)
+                .map(edge => edge.target);
+                
+              if (affectedNodes.length > 0) {
+                console.log(`Node ${id} output changed, affected nodes: `, affectedNodes);
+                
+                // Visual indicator or other action for dependent nodes
+                // This could be expanded to do more than logging
+                setNodes(prevNodes => 
+                  prevNodes.map(node => {
+                    // If this node depends on the changed node, mark it
+                    if (affectedNodes.includes(node.id)) {
+                      return {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          needsRefresh: true // Flag that this node should be refreshed
+                        }
+                      };
+                    }
+                    return node;
+                  })
+                );
+              }
+              
+              return newOutput;
             } catch (error) {
               console.error('Caught Error:', error);
               console.log('Error type:', typeof error);
