@@ -1408,36 +1408,16 @@ async def generate_text_node_api(request: GenerateTextNodeRequest, session_id: s
                 break
 
     # --- Determine Task-Specific Instruction ---
-    primary_instruction = f"Your task is to address the user's request: \\\"{processed_prompt}\\\"" # Default
-    user_req_lower = processed_prompt.lower()
-
-    # Prioritize more specific keywords first
-    # --- Refined handling for definition tasks ---
-    if any(verb in user_req_lower for verb in ["define", "definition of", "explain terms"]):
-        primary_instruction = f"Your task is to first IDENTIFY the key terms requested by the user: \\\"{processed_prompt}\\\". Then, using your knowledge, PROVIDE a clear definition for each identified term. You may use the provided node content for context if needed to understand the request. Note any ambiguity or terms that cannot be defined."
-    # --- End refined handling ---
-    elif any(verb in user_req_lower for verb in ["extract", "list", "find", "get item"]):
-        primary_instruction = f"Your task is to EXTRACT the specific information requested by the user: \\\"{processed_prompt}\\\" directly from the provided node content. If the information is not present, state that clearly."
-    elif any(verb in user_req_lower for verb in ["analyze", "compare", "evaluate"]):
-        primary_instruction = f"Your task is to ANALYZE the subject matter described in the node content, based on the user's request: \\\"{processed_prompt}\\\""
-    elif any(verb in user_req_lower for verb in ["summarize", "explain"]):
-        primary_instruction = f"Your task is to SUMMARIZE or EXPLAIN the subject matter from the node content relevant to the user's request: \\\"{processed_prompt}\\\""
-    elif any(verb in user_req_lower for verb in ["write", "create", "generate"]):
-         primary_instruction = f"Your task is to CREATE or WRITE content based on the user's request: \\\"{processed_prompt}\\\", using the node content as source material or inspiration."
-    # Default instruction remains if no keywords match
-
-    # --- Construct Simplified System Message with Specific Instruction ---
-    system_content = f"You are a helpful AI assistant. {primary_instruction}."
+    primary_instruction = f"Your task is to address the user's request: \\\"{processed_prompt}\\\""
+    
+    # --- Construct System Message with Context ---
+    system_content = f"You are a helpful AI assistant. {primary_instruction}"
     
     if request.context_data:
-        context_keys = [k for k in request.context_data.keys() if k != '__node_mapping'] # Filter out mapping key
+        context_keys = [k for k in request.context_data.keys() if k != '__node_mapping' and k != '__current_node']
         if context_keys:
             system_content += f"\\n\\nYou have access to information from the following nodes: {', '.join(context_keys)}."
-            system_content += "\\nUse the content of these nodes as the primary source material or subject for your response."
-            # Simple grounding instruction, letting the primary_instruction guide the approach
-            system_content += "\\nBase your response primarily on the information provided in these nodes."
-        else:
-             system_content += "\\nNo specific node content provided for context."
+            system_content += "\\nUse this information to inform your response."
 
     print(f"\n=== FULL SYSTEM CONTENT ===\n{system_content}\n=== END SYSTEM CONTENT ===\n")
     
