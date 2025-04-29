@@ -1213,6 +1213,17 @@ async def add_edge_api(edge: EdgeInput):
 @app.post("/generate_text_node", response_model=GenerateTextNodeResponse)
 async def generate_text_node_api(request: GenerateTextNodeRequest):
     """Executes a single text generation call based on provided prompt text."""
+    # --- Log the raw incoming request data --- 
+    try:
+        print("\n=== RAW generate_text_node_api Request ===")
+        print(f"Prompt Text: {request.prompt_text}")
+        print(f"Context Data Received: {request.context_data}")
+        print(f"LLM Config Received: {request.llm_config}")
+        print("=== END RAW Request ===\n")
+    except Exception as log_e:
+        print(f"Error logging raw request: {log_e}")
+    # --- End Logging --- 
+    
     if not client:
         raise HTTPException(status_code=500, detail="OpenAI client not set up. Check API key.")
 
@@ -1239,42 +1250,35 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         request.prompt_text, request.context_data, DataAccessor(request.context_data)
     )
 
-    # Enhanced system message with guidance about node relationships and data structures
-    system_content = "You are a helpful AI assistant working with connected nodes of information."
+    # --- Determine Task-Specific Instruction ---
+    primary_instruction = f"Your task is to address the user's request: \\\"{processed_prompt}\\\"" # Default
+    user_req_lower = processed_prompt.lower()
+
+    # Prioritize more specific keywords first
+    if any(verb in user_req_lower for verb in ["extract", "list", "find", "get item"]):
+        primary_instruction = f"Your task is to EXTRACT the specific information requested by the user: \\\"{processed_prompt}\\\" directly from the provided node content."
+    elif any(verb in user_req_lower for verb in ["analyze", "compare", "evaluate"]):
+        primary_instruction = f"Your task is to ANALYZE the subject matter described in the node content, based on the user's request: \\\"{processed_prompt}\\\""
+    elif any(verb in user_req_lower for verb in ["summarize", "explain"]):
+        primary_instruction = f"Your task is to SUMMARIZE or EXPLAIN the subject matter from the node content relevant to the user's request: \\\"{processed_prompt}\\\""
+    elif any(verb in user_req_lower for verb in ["write", "create", "generate"]):
+         primary_instruction = f"Your task is to CREATE or WRITE content based on the user's request: \\\"{processed_prompt}\\\", using the node content as source material or inspiration."
+    # Default instruction remains if no keywords match
+
+    # --- Construct Simplified System Message with Specific Instruction ---
+    system_content = f"You are a helpful AI assistant. {primary_instruction}."
     
     if request.context_data:
-        system_content += "\n\nYou have access to content from these nodes:\n" + "\n".join(
-            f"- {node_name}: {content[:50]}..." if len(content) > 50 else f"- {node_name}: {content}"
-            for node_name, content in request.context_data.items()
-        )
-        
-        # Add explicit JSON data if detected
-        for node_name, content in request.context_data.items():
-            json_data = ContentParser.try_parse_json(content)
-            if json_data:
-                system_content += f"\n\nJSON data from {node_name}:\n```json\n{json.dumps(json_data, indent=2)}\n```"
-                # Add specific instructions for this JSON
-                if isinstance(json_data, dict) and "countries" in json_data:
-                    countries = json_data.get("countries", [])
-                    country_names = [country.get("name") for country in countries if isinstance(country, dict) and "name" in country]
-                    if country_names:
-                        system_content += f"\n\nCountries found in {node_name}: {', '.join(country_names)}"
-                            
-                        # Add specific guidance on accessing country populations
-                        if any("population" in country for country in countries if isinstance(country, dict)):
-                            system_content += f"\n\nTo access population data for a specific country, look up the country by name in the JSON data."
-        
-        system_content += "\n\nWhen answering:"
-        system_content += "\n- Reference the specific content from nodes directly"
-        system_content += "\n- If content contains numbered items, extract and use the exact items being referenced"
-        system_content += "\n- If a question asks about a specific numbered item (e.g., 'item #2 from Node 1'), provide the exact corresponding item"
-        system_content += "\n- When working with JSON data, use the exact values from the JSON structure"
-        system_content += "\n- Analyze any lists, data, or information thoroughly"
-        system_content += "\n- When working with tables, maintain proper formatting"
-        system_content += "\n- If you can't find the referenced data, clearly state that it's not available"
-        system_content += "\n- Ensure you're looking at the correct node when extracting information"
+        context_keys = [k for k in request.context_data.keys() if k != '__node_mapping'] # Filter out mapping key
+        if context_keys:
+            system_content += f"\\n\\nYou have access to information from the following nodes: {', '.join(context_keys)}."
+            system_content += "\\nUse the content of these nodes as the primary source material or subject for your response."
+            # Simple grounding instruction, letting the primary_instruction guide the approach
+            system_content += "\\nBase your response primarily on the information provided in these nodes."
+        else:
+             system_content += "\\nNo specific node content provided for context."
 
-    print(f"\n=== FULL SYSTEM CONTENT ===\n{system_content}\n=== END SYSTEM CONTENT ===\n")
+    print(f"\\n=== FULL SYSTEM CONTENT ===\\n{system_content}\\n=== END SYSTEM CONTENT ===\\n")
     
     # Prepare messages with enhanced system content
     messages_payload = [
@@ -1282,10 +1286,10 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
         {"role": "user", "content": processed_prompt}
     ]
 
-    print(f"\n=== FULL MESSAGE PAYLOAD ===")
+    print(f"\\n=== FULL MESSAGE PAYLOAD ===")
     for idx, msg in enumerate(messages_payload):
-        print(f"Message {idx+1} ({msg['role']}):\n{msg['content']}\n---")
-    print(f"=== END MESSAGE PAYLOAD ===\n")
+        print(f"Message {idx+1} ({msg['role']}):\\n{msg['content']}\\n---")
+    print(f"=== END MESSAGE PAYLOAD ===\\n")
 
     response_content = None
     tracker_instance = None
@@ -1306,7 +1310,7 @@ async def generate_text_node_api(request: GenerateTextNodeRequest):
             tracker_instance = tracker # Store the tracker instance
             
             # Log the response content
-            print(f"\n=== RESPONSE CONTENT ===\n{response_content}\n=== END RESPONSE CONTENT ===\n")
+            print(f"\\n=== RESPONSE CONTENT ===\\n{response_content}\\n=== END RESPONSE CONTENT ===\\n")
 
         if response_content is None:
             raise ValueError("Received no content from OpenAI.")

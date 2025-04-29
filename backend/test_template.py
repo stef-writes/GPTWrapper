@@ -53,7 +53,9 @@ def main():
             "Question": "How does algorithmic curation reshape our intellectual development and cultural perspectives?",
             # Add node mapping to simulate what the frontend sends
             "__node_mapping": {
-                "Question": "abc123-fake-uuid"
+                "Question": "abc123-fake-uuid",
+                # Also add lowercase variant for testing
+                "question": "abc123-fake-uuid"
             },
             # Add ID-based entry
             "id:abc123-fake-uuid": "How does algorithmic curation reshape our intellectual development and cultural perspectives?"
@@ -66,12 +68,17 @@ def main():
         node_content = sys.argv[2]
         fake_uuid = "uuid-" + node_name.replace(" ", "-").lower()
         
+        # Create mapping entries for variants of the node name
+        mapping = {
+            node_name: fake_uuid,  # Original name
+            node_name.lower(): fake_uuid,  # Lowercase
+            node_name.replace(" ", ""): fake_uuid  # No spaces
+        }
+        
         test_case["context_data"] = {
             node_name: node_content,
-            # Add node mapping
-            "__node_mapping": {
-                node_name: fake_uuid
-            },
+            # Add node mapping with variants
+            "__node_mapping": mapping,
             # Add ID-based entry
             f"id:{fake_uuid}": node_content
         }
